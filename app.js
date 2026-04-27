@@ -50,6 +50,7 @@
   let shelterLayer = null;
   let lastShiftAnchor = null;
   let pendingBulkRange = null; // {from, to, ids}
+  let openStates = new Set(); // state names whose section the user has expanded
   let pendingApplyAfterHook = null; // optional callback after applyBulkDate
 
   // -------- Storage helpers --------
@@ -300,7 +301,10 @@
         const el = document.querySelector(`[data-seg="${seg.id}"]`);
         if (el) {
           const stateEl = el.closest(".state");
-          if (stateEl) stateEl.classList.remove("collapsed");
+          if (stateEl) {
+            stateEl.classList.remove("collapsed");
+            openStates.add(stateEl.dataset.state);
+          }
           el.scrollIntoView({ behavior: "smooth", block: "center" });
           el.classList.add("map-hover");
           setTimeout(() => el.classList.remove("map-hover"), 1500);
@@ -394,7 +398,9 @@
       const hikedCount = segs.filter((s) => progress.has(s.id)).length;
       const hikedMi = segs.filter((s) => progress.has(s.id)).reduce((a, s) => a + s.miles, 0);
       const totalStateMi = segs.reduce((a, s) => a + s.miles, 0);
-      const collapsedClass = filterText || onlyHiked || onlyPlanned ? "" : " collapsed";
+      const expandedByFilter = !!(filterText || onlyHiked || onlyPlanned);
+      const isOpen = expandedByFilter || openStates.has(st.name);
+      const collapsedClass = isOpen ? "" : " collapsed";
       html.push(`<section class="state${collapsedClass}" data-state="${escapeHtml(st.name)}">`);
       html.push(`<header class="state-header">`);
       html.push(`<svg class="caret" viewBox="0 0 12 12" fill="currentColor"><path d="M3 4.5l3 3 3-3"/></svg>`);
@@ -862,7 +868,11 @@
     }
     const header = e.target.closest(".state-header");
     if (header) {
-      header.parentElement.classList.toggle("collapsed");
+      const stateEl = header.parentElement;
+      stateEl.classList.toggle("collapsed");
+      const stateName = stateEl.dataset.state;
+      if (stateEl.classList.contains("collapsed")) openStates.delete(stateName);
+      else openStates.add(stateName);
       return;
     }
     const cb = e.target.closest("[data-toggle]");
