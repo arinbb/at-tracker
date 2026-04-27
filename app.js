@@ -1062,6 +1062,63 @@
     refreshMapStyles();
   }
 
+  // -------- Backup file (full state) --------
+  function buildBackup() {
+    return {
+      app: "at-section-tracker",
+      version: 1,
+      exported: new Date().toISOString(),
+      profile: activeProfile,
+      hiked: Object.fromEntries(progress),
+      planned: [...planned],
+      notes: Object.fromEntries([...notes].filter(([, v]) => v)),
+    };
+  }
+  function saveBackupFile() {
+    const data = JSON.stringify(buildBackup(), null, 2);
+    const blob = new Blob([data], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `at-tracker-${activeProfile.replace(/[^a-z0-9]+/gi, "_")}-${todayISO()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  async function loadBackupFile(file) {
+    const status = $("load-file-status");
+    status.textContent = "Reading file…";
+    let text;
+    try { text = await file.text(); } catch (e) { status.textContent = `Read failed: ${e.message}`; return; }
+    let obj;
+    try { obj = JSON.parse(text); } catch (e) { status.textContent = `Not valid JSON: ${e.message}`; return; }
+    if (!obj || obj.app !== "at-section-tracker") {
+      status.textContent = "This doesn't look like an AT tracker backup file.";
+      return;
+    }
+    // Apply profile
+    const profileName = (obj.profile || "").trim() || activeProfile;
+    if (profileName !== activeProfile) {
+      ensureProfile(profileName);
+      activeProfile = profileName;
+      saveActiveProfile();
+    }
+    // Apply state
+    progress = new Map(Object.entries(obj.hiked || {}).map(([k, v]) => [Number(k), String(v || "")]));
+    planned = new Set((obj.planned || []).map(Number));
+    notes = new Map(Object.entries(obj.notes || {}).map(([k, v]) => [Number(k), String(v || "")]));
+    saveProgress();
+    saveNotes();
+    renderProfileSelect();
+    renderSections();
+    updateStats();
+    refreshMapStyles();
+    const counts = `${progress.size} hiked · ${planned.size} planned · ${notes.size} notes`;
+    status.textContent = `Restored profile "${profileName}" (${counts}).`;
+    setTimeout(() => $("load-modal").classList.remove("show"), 1500);
+  }
+
   // -------- GPX export --------
   function gpxEscape(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -1292,9 +1349,19 @@
     $("share-btn").addEventListener("click", openShare);
     $("share-close").addEventListener("click", () => $("share-modal").classList.remove("show"));
     $("share-copy").addEventListener("click", copyShareUrl);
-    $("load-btn").addEventListener("click", () => { $("load-code").value = ""; $("load-modal").classList.add("show"); });
+    $("save-file").addEventListener("click", saveBackupFile);
+    $("load-btn").addEventListener("click", () => {
+      $("load-code").value = "";
+      $("load-file").value = "";
+      $("load-file-status").textContent = "";
+      $("load-modal").classList.add("show");
+    });
     $("load-cancel").addEventListener("click", () => $("load-modal").classList.remove("show"));
     $("load-go").addEventListener("click", doLoad);
+    $("load-file").addEventListener("change", (e) => {
+      const f = e.target.files[0];
+      if (f) loadBackupFile(f);
+    });
     $("reset-btn").addEventListener("click", doReset);
 
     $("gpx-export-btn").addEventListener("click", exportGPX);

@@ -376,13 +376,18 @@
 </main>
 
 <div class="modal-bg" id="share-modal">
-  <div class="modal">
+  <div class="modal" style="max-width: 580px;">
     <h2>Share / save your progress</h2>
-    <p>Bookmark this URL or copy the code below to restore on another device. Notes are kept on this device only — they're not included in the share code.</p>
-    <p><strong>URL:</strong></p>
+    <p style="margin-top: 4px;"><strong>Full backup file</strong> — includes hiked sections, planned segments, dates, and notes. Recommended for archival.</p>
+    <div class="modal-actions" style="justify-content: flex-start; margin: 8px 0 16px;">
+      <button id="save-file" class="primary">Download backup file</button>
+    </div>
+    <p style="margin-top: 4px;"><strong>Share URL</strong> — quick to send. Includes hiked + planned only; not notes.</p>
     <input type="text" id="share-url" readonly />
-    <p><strong>Code only:</strong></p>
-    <textarea id="share-code" readonly></textarea>
+    <details style="margin-top: 8px;">
+      <summary style="font-size: 12px; cursor: pointer; color: var(--muted);">Show short code</summary>
+      <textarea id="share-code" readonly></textarea>
+    </details>
     <div class="modal-actions">
       <button id="share-copy">Copy URL</button>
       <button id="share-close" class="primary">Done</button>
@@ -391,13 +396,17 @@
 </div>
 
 <div class="modal-bg" id="load-modal">
-  <div class="modal">
-    <h2>Load progress code</h2>
-    <p>Paste a code from a previously shared URL.</p>
-    <textarea id="load-code" placeholder="Paste your code here…"></textarea>
+  <div class="modal" style="max-width: 580px;">
+    <h2>Restore progress</h2>
+    <p style="margin-top: 4px;"><strong>From a backup file</strong> — restores everything (hiked, planned, notes, profile name).</p>
+    <input type="file" id="load-file" accept=".json,application/json" />
+    <div id="load-file-status" style="font-size: 12px; color: var(--muted); margin-top: 4px;"></div>
+
+    <p style="margin-top: 16px;"><strong>From a share code or URL</strong></p>
+    <textarea id="load-code" placeholder="Paste a share URL or code…"></textarea>
     <div class="modal-actions">
       <button id="load-cancel">Cancel</button>
-      <button id="load-go" class="primary">Load</button>
+      <button id="load-go" class="primary">Load code</button>
     </div>
   </div>
 </div>
@@ -481,6 +490,6 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-<script src="app.js?v=8"></script>
+<script src="app.js?v=9"></script>
 </body>
 </html>
