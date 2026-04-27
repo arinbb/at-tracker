@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AT Section Tracker</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+<style>
+  :root {
+    --bg: #f5f3ee;
+    --panel: #ffffff;
+    --panel-alt: #f9f7f2;
+    --ink: #2d2a26;
+    --muted: #6b6660;
+    --rule: #d8d4cc;
+    --hike: #2a7d3a;
+    --hike-bg: #d9ecdb;
+    --plan: #1a5fb4;
+    --plan-bg: #d8e6f7;
+    --accent: #8b3a2f;
+    --hover: #faf8f3;
+    --input-bg: #ffffff;
+    --input-bg-alt: #faf8f3;
+    --map-bg: #e8e4dc;
+  }
+  body.theme-dark {
+    --bg: #1c1a17;
+    --panel: #25221e;
+    --panel-alt: #2c2924;
+    --ink: #e8e3d8;
+    --muted: #948e83;
+    --rule: #3a352f;
+    --hike: #5fb56e;
+    --hike-bg: #2a3a2a;
+    --plan: #6ba4d8;
+    --plan-bg: #1f2c3d;
+    --accent: #d97a64;
+    --hover: #2f2b25;
+    --input-bg: #1c1a17;
+    --input-bg-alt: #25221e;
+    --map-bg: #1a1816;
+  }
+  body.theme-dark .leaflet-container { filter: brightness(0.85) contrast(1.05); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--ink); background: var(--bg); }
+  body { display: flex; flex-direction: column; }
+
+  header {
+    padding: 10px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
+  header h1 .accent { color: var(--accent); }
+  .stats { display: flex; gap: 20px; font-size: 13px; color: var(--muted); }
+  .stats strong { color: var(--ink); }
+  .stats .pct { color: var(--hike); font-weight: 600; }
+  .progress-bar {
+    flex: 1;
+    min-width: 200px;
+    height: 6px;
+    background: var(--rule);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .progress-bar > div { height: 100%; background: var(--hike); transition: width .25s ease; }
+  .actions { display: flex; gap: 8px; }
+  button {
+    font: inherit;
+    padding: 6px 12px;
+    border: 1px solid var(--rule);
+    background: var(--panel);
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--ink);
+  }
+  button:hover { background: var(--hover); }
+  button.primary { background: var(--accent); color: white; border-color: var(--accent); }
+  button.primary:hover { background: #6f2d24; }
+
+  main {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+  }
+
+  #sidebar {
+    width: 420px;
+    border-right: 1px solid var(--rule);
+    background: var(--panel);
+    overflow-y: auto;
+    padding: 0;
+  }
+  .filter-bar {
+    position: sticky;
+    top: 0;
+    background: var(--panel);
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    z-index: 5;
+  }
+  .filter-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .filter-bar input[type=search] {
+    flex: 1;
+    min-width: 140px;
+    padding: 6px 10px;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    font: inherit;
+    background: white;
+  }
+  .filter-bar label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }
+  .filter-bar select { font: inherit; font-size: 12px; padding: 4px 6px; border: 1px solid var(--rule); border-radius: 4px; background: white; }
+
+  .state {
+    border-bottom: 1px solid var(--rule);
+  }
+  .state-header {
+    padding: 10px 12px;
+    background: var(--panel-alt);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    font-size: 14px;
+    user-select: none;
+  }
+  .state-header .caret { width: 12px; transition: transform .15s ease; color: var(--muted); }
+  .state.collapsed .caret { transform: rotate(-90deg); }
+  .state.collapsed .state-body { display: none; }
+  .state-header .state-stats { margin-left: auto; font-size: 12px; color: var(--muted); font-weight: 500; }
+  .state-header .state-stats .done { color: var(--hike); font-weight: 600; }
+
+  .seg {
+    padding: 8px 12px 8px 32px;
+    border-top: 1px solid var(--rule);
+    display: grid;
+    grid-template-columns: 18px 1fr auto;
+    gap: 6px 8px;
+    align-items: start;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .seg:hover { background: var(--hover); }
+  .seg.hiked { background: var(--hike-bg); }
+  .seg.planned { background: var(--plan-bg); }
+  .seg.hiked.planned { background: var(--hike-bg); }
+  .seg.map-hover { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .seg input[type=checkbox] { margin: 2px 0 0 0; cursor: pointer; }
+  .seg .name { line-height: 1.3; }
+  .seg .name .arrow { color: var(--muted); margin: 0 4px; }
+  .seg .miles { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; padding-top: 2px; text-align: right; display: flex; align-items: flex-start; gap: 6px; justify-content: flex-end; }
+  .seg .miles .miles-text { display: flex; flex-direction: column; align-items: flex-end; }
+  .seg .zoom-btn {
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    padding: 0;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    color: var(--muted);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .seg .zoom-btn:hover { background: var(--hover); color: var(--accent); }
+  .seg .zoom-btn svg { width: 14px; height: 14px; display: block; }
+  .seg .plan-btn {
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    padding: 0;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    color: var(--muted);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .seg .plan-btn:hover { background: var(--hover); color: var(--plan); }
+  .seg.planned .plan-btn { color: var(--plan); }
+  .seg .plan-btn svg { width: 14px; height: 14px; display: block; }
+  .seg .miles .cum { display: block; font-size: 10.5px; opacity: 0.75; }
+  .seg .date-row { grid-column: 2 / 4; display: flex; gap: 8px; align-items: center; margin-top: 4px; flex-wrap: wrap; }
+  .seg.hiked .date-row { display: flex; }
+  .seg:not(.hiked) .date-row { display: none; }
+  .seg input[type=date] { font: inherit; padding: 2px 6px; border: 1px solid var(--rule); border-radius: 4px; background: white; }
+  .seg .notes-row { grid-column: 2 / 4; display: none; margin-top: 4px; }
+  .seg.hiked .notes-row { display: block; }
+  .seg .notes-row textarea {
+    width: 100%; font: inherit; font-size: 12px; padding: 4px 6px;
+    border: 1px solid var(--rule); border-radius: 4px; background: white;
+    resize: vertical; min-height: 28px; max-height: 120px;
+    font-family: inherit;
+  }
+  .seg .notes-row textarea::placeholder { color: #b3ada3; font-style: italic; }
+
+  #map { flex: 1; min-width: 0; }
+
+  /* Modal */
+  .modal-bg {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.4);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+  }
+  .modal-bg.show { display: flex; }
+  .modal {
+    background: var(--panel);
+    border-radius: 8px;
+    padding: 20px 24px;
+    max-width: 520px;
+    width: 90%;
+    box-shadow: 0 10px 40px rgba(0,0,0,.2);
+  }
+  .modal h2 { margin: 0 0 12px 0; font-size: 16px; }
+  .modal p { margin: 8px 0; color: var(--muted); font-size: 13px; }
+  .modal textarea, .modal input[type=text] {
+    width: 100%;
+    font: inherit;
+    font-size: 12px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    padding: 8px;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    background: var(--hover);
+    word-break: break-all;
+  }
+  .modal textarea { min-height: 80px; resize: vertical; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+  #loading {
+    padding: 20px;
+    text-align: center;
+    color: var(--muted);
+  }
+  .err { color: var(--accent); padding: 16px; font-size: 13px; }
+
+  /* Map: hiked segments highlighted, unhiked muted */
+  .leaflet-container { background: var(--map-bg); }
+  .modal textarea, .modal input[type=text], .filter-bar input[type=search],
+  .filter-bar select, .seg input[type=date], .seg .notes-row textarea,
+  .profile-control select { background: var(--input-bg); color: var(--ink); }
+  body.theme-dark .modal textarea,
+  body.theme-dark .modal input[type=text],
+  body.theme-dark .filter-bar input[type=search] { background: var(--input-bg-alt); }
+  body.theme-dark .seg.hiked { background: var(--hike-bg); color: var(--ink); }
+
+  /* Map legend */
+  .map-legend {
+    background: var(--panel);
+    padding: 8px 10px;
+    border-radius: 6px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.18);
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--ink);
+  }
+  .map-legend .row { display: flex; align-items: center; gap: 6px; }
+  .map-legend .swatch { width: 18px; height: 4px; border-radius: 2px; flex-shrink: 0; }
+  .map-legend .swatch.shelter { width: 8px; height: 8px; border-radius: 50%; background: #e8a849; border: 1px solid #3a2d20; }
+
+  /* Profile selector */
+  .profile-control { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+  .profile-control select { font: inherit; font-size: 12px; padding: 4px 6px; border: 1px solid var(--rule); border-radius: 4px; background: white; }
+
+  /* Print view */
+  @media print {
+    header, .filter-bar, #map, .map-legend, .actions, .leaflet-container,
+    .modal-bg, .progress-bar { display: none !important; }
+    main { display: block; }
+    #sidebar { width: auto; max-height: none; overflow: visible; border: none; }
+    body { background: white; }
+    .state.collapsed .state-body { display: block !important; }
+    .state.collapsed .caret { transform: rotate(0deg); }
+    .seg:not(.hiked) { display: none; }
+    .seg { page-break-inside: avoid; }
+    .state-body { display: block !important; }
+    .state { page-break-inside: avoid; border-bottom: 1px solid #999; }
+    .state-header { background: white !important; }
+    body::before {
+      content: "Appalachian Trail — section hike journal";
+      display: block;
+      font-size: 22px;
+      font-weight: 700;
+      padding: 12px 0;
+      border-bottom: 2px solid #333;
+      margin-bottom: 12px;
+    }
+  }
+
+  @media (max-width: 760px) {
+    main { flex-direction: column; }
+    #sidebar { width: 100%; max-height: 50vh; border-right: none; border-bottom: 1px solid var(--rule); }
+    #map { height: 50vh; }
+    header { position: sticky; top: 0; z-index: 10; }
+    .stats { font-size: 12px; gap: 12px; }
+    .progress-bar { display: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="accent">⛰</span> AT Section Tracker</h1>
+  <div class="stats" id="stats">
+    <span><strong id="stat-segs">0</strong> / <span id="stat-total-segs">0</span> sections</span>
+    <span><strong id="stat-miles">0</strong> / <span id="stat-total-miles">0</span> mi</span>
+    <span class="pct" id="stat-pct">0%</span>
+    <span id="stat-planned" style="color: var(--plan);"></span>
+  </div>
+  <div class="progress-bar"><div id="progress-fill" style="width:0%"></div></div>
+  <div class="profile-control">
+    <span>Profile:</span>
+    <select id="profile-select" title="Switch hiker profile"></select>
+    <button id="profile-add" title="Add a profile">+</button>
+    <button id="profile-rename" title="Rename current profile">✎</button>
+    <button id="profile-delete" title="Delete current profile">✕</button>
+  </div>
+  <div class="actions">
+    <button id="planned-btn">Planned</button>
+    <button id="stats-btn">Stats</button>
+    <button id="share-btn">Share / Save</button>
+    <button id="load-btn">Load Code</button>
+    <button id="gpx-export-btn">Export GPX</button>
+    <button id="gpx-import-btn">Import GPX</button>
+    <button id="print-btn">Print Journal</button>
+    <button id="reset-btn">Reset</button>
+    <button id="theme-btn" title="Toggle light/dark theme">☾</button>
+  </div>
+</header>
+
+<main>
+  <aside id="sidebar">
+    <div class="filter-bar">
+      <div class="filter-row">
+        <input type="search" id="filter" placeholder="Filter segments / shelters…" />
+        <label><input type="checkbox" id="filter-hiked" /> hiked only</label>
+        <label><input type="checkbox" id="filter-planned" /> planned only</label>
+      </div>
+      <div class="filter-row">
+        <label>View:
+          <select id="view-mode">
+            <option value="state">By state</option>
+            <option value="trip">By trip (date)</option>
+          </select>
+        </label>
+        <label>Direction:
+          <select id="direction">
+            <option value="nobo">SOBO → NOBO</option>
+            <option value="sobo">NOBO → SOBO</option>
+          </select>
+        </label>
+        <label><input type="checkbox" id="show-shelters" checked /> shelters</label>
+        <label><input type="checkbox" id="color-by-year" /> color by year</label>
+      </div>
+    </div>
+    <div id="loading">Loading AT trail data…</div>
+    <div id="sections"></div>
+  </aside>
+  <div id="map"></div>
+</main>
+
+<div class="modal-bg" id="share-modal">
+  <div class="modal">
+    <h2>Share / save your progress</h2>
+    <p>Bookmark this URL or copy the code below to restore on another device. Notes are kept on this device only — they're not included in the share code.</p>
+    <p><strong>URL:</strong></p>
+    <input type="text" id="share-url" readonly />
+    <p><strong>Code only:</strong></p>
+    <textarea id="share-code" readonly></textarea>
+    <div class="modal-actions">
+      <button id="share-copy">Copy URL</button>
+      <button id="share-close" class="primary">Done</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="load-modal">
+  <div class="modal">
+    <h2>Load progress code</h2>
+    <p>Paste a code from a previously shared URL.</p>
+    <textarea id="load-code" placeholder="Paste your code here…"></textarea>
+    <div class="modal-actions">
+      <button id="load-cancel">Cancel</button>
+      <button id="load-go" class="primary">Load</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="gpx-import-modal">
+  <div class="modal">
+    <h2>Import GPX track</h2>
+    <p>Upload a .gpx file from a recorded hike. Segments where ≥60% of the trail polyline is within 100 meters of your track will be marked as hiked.</p>
+    <input type="file" id="gpx-file" accept=".gpx,application/gpx+xml" />
+    <p style="margin-top:12px;"><label>Date for matched sections: <input type="date" id="gpx-date" /></label></p>
+    <div id="gpx-import-status" style="font-size:12px;color:var(--muted);margin-top:8px;"></div>
+    <div class="modal-actions">
+      <button id="gpx-import-cancel">Cancel</button>
+      <button id="gpx-import-go" class="primary">Import</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="bulk-date-modal">
+  <div class="modal">
+    <h2>Set date for range</h2>
+    <p>You're marking <strong id="bulk-date-count">0</strong> sections at once. Pick the date for all of them.</p>
+    <p><label>Date: <input type="date" id="bulk-date-input" /></label></p>
+    <div class="modal-actions">
+      <button id="bulk-date-cancel">Cancel</button>
+      <button id="bulk-date-skip">Use today's date</button>
+      <button id="bulk-date-go" class="primary">Apply</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="planned-modal">
+  <div class="modal" style="max-width: 640px;">
+    <h2>Next planned hike — <span id="planned-profile-name"></span></h2>
+    <div id="planned-body" style="font-size: 13px;"></div>
+    <div class="modal-actions">
+      <button id="planned-clear">Clear all planned</button>
+      <button id="planned-mark-hiked">Mark all as hiked…</button>
+      <button id="planned-close" class="primary">Close</button>
+    </div>
+  </div>
+</div>
+
+<style>
+  #planned-body .stat-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 24px; margin: 12px 0; }
+  #planned-body .stat-grid .label { color: var(--muted); }
+  #planned-body .stat-grid .val { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+  #planned-body h3 { font-size: 13px; margin: 16px 0 6px 0; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  #planned-body .seg-line { padding: 4px 0; border-bottom: 1px dashed var(--rule); font-size: 12px; }
+  #planned-body .seg-line .mi { color: var(--muted); margin-left: 6px; font-variant-numeric: tabular-nums; }
+  #planned-body .empty { color: var(--muted); font-style: italic; padding: 12px 0; }
+</style>
+
+<div class="modal-bg" id="stats-modal">
+  <div class="modal" style="max-width: 640px;">
+    <h2>Hike statistics — <span id="stats-profile-name"></span></h2>
+    <div id="stats-body" style="font-size: 13px;"></div>
+    <div class="modal-actions">
+      <button id="stats-close" class="primary">Close</button>
+    </div>
+  </div>
+</div>
+
+<style>
+  #stats-body .stat-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 24px; margin: 12px 0; }
+  #stats-body .stat-grid .label { color: var(--muted); }
+  #stats-body .stat-grid .val { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+  #stats-body h3 { font-size: 13px; margin: 16px 0 6px 0; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  #stats-body .year-row, #stats-body .state-row { display: grid; grid-template-columns: 80px 1fr 70px; gap: 8px; align-items: center; padding: 3px 0; font-size: 12px; }
+  #stats-body .bar-bg { height: 8px; background: var(--rule); border-radius: 4px; overflow: hidden; }
+  #stats-body .bar-fill { height: 100%; background: var(--hike); }
+  #stats-body .bar-num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+</style>
+
+<div class="map-legend leaflet-bar leaflet-control" id="map-legend" style="display:none;">
+  <div class="row"><span class="swatch" style="background:#7a4f3a"></span> AT trail</div>
+  <div class="row"><span class="swatch" style="background:#2a7d3a;height:5px"></span> hiked</div>
+  <div class="row"><span class="swatch" style="background:#1a5fb4;height:4px"></span> planned</div>
+  <div class="row"><span class="swatch shelter"></span> shelter</div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="app.js?v=7"></script>
+</body>
+</html>
