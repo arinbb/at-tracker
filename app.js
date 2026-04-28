@@ -51,6 +51,10 @@
   let lastShiftAnchor = null;
   let pendingBulkRange = null; // {from, to, ids}
   let openStates = new Set(); // state names whose section the user has expanded
+  let openChunks = new Set(); // "state::chunk-i" keys for expanded sub-groups
+  let multiSelectMode = false; // mobile-friendly bulk-select toggle
+  let multiSelectAnchor = null; // first segId tapped while in multi-select mode
+  let notesSaveTimer = null; // debounced notes flush
   let pendingApplyAfterHook = null; // optional callback after applyBulkDate
 
   // -------- Storage helpers --------
@@ -272,10 +276,24 @@
     window.addEventListener("resize", () => map.invalidateSize());
     window._atMap = map;
   }
+  // Curated palette — twelve distinct, accessible colors that look good on both
+  // light and dark map basemaps. Cycles by (year - earliestYear) so that when
+  // someone has 1995-and-up data, the same year always gets the same color.
+  const YEAR_PALETTE = [
+    "#2a7d3a", "#1a5fb4", "#a23232", "#b56a00", "#6b3da3", "#0f7a6b",
+    "#c44569", "#3a6e9c", "#5b8a3a", "#a8702a", "#7d3a8b", "#2c5d63",
+  ];
   function yearColor(year) {
-    if (!year) return "#2a7d3a";
-    const hue = ((year - 2000) * 47) % 360;
-    return `hsl(${hue}, 60%, 38%)`;
+    if (!year) return YEAR_PALETTE[0];
+    let earliest = Infinity;
+    for (const date of progress.values()) {
+      if (!date) continue;
+      const y = Number(date.slice(0, 4));
+      if (y && y < earliest) earliest = y;
+    }
+    if (earliest === Infinity) earliest = year;
+    const idx = ((year - earliest) % YEAR_PALETTE.length + YEAR_PALETTE.length) % YEAR_PALETTE.length;
+    return YEAR_PALETTE[idx];
   }
   function styleFor(segId) {
     const date = progress.get(segId);
@@ -363,6 +381,34 @@
       mi += s.miles;
     }
   }
+  function segRowHTML(seg, reverse, totalMi) {
+    const hiked = progress.has(seg.id);
+    const date = progress.get(seg.id) || "";
+    const note = notes.get(seg.id) || "";
+    const cumStart = segCumulative.get(seg.id) || 0;
+    const displayMi = reverse ? (totalMi - (cumStart + seg.miles)) : cumStart;
+    const isPlanned = planned.has(seg.id);
+    const today = todayISO();
+    return `<div class="seg${hiked ? " hiked" : ""}${isPlanned ? " planned" : ""}" data-seg="${seg.id}">` +
+      `<input type="checkbox" data-toggle="${seg.id}" ${hiked ? "checked" : ""} title="Click to mark hiked; shift-click (or use Multi-select) to mark a range" aria-label="Mark ${escapeHtml(seg.from)} to ${escapeHtml(seg.to)} as hiked"/>` +
+      `<div class="name">${escapeHtml(seg.from)}<span class="arrow">→</span>${escapeHtml(seg.to)}</div>` +
+      `<div class="miles"><span class="miles-text">${seg.miles.toFixed(1)} mi<span class="cum">@ ${displayMi.toFixed(1)} mi</span></span>` +
+      `<button class="plan-btn" data-plan="${seg.id}" title="${isPlanned ? "Remove from planned" : "Mark as next planned hike"}" aria-label="${isPlanned ? "Remove from planned" : "Mark as planned"}" aria-pressed="${isPlanned}"><svg viewBox="0 0 16 16" fill="${isPlanned ? "currentColor" : "none"}" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M4 1.5h8v13l-4-2.5-4 2.5z"/></svg></button>` +
+      `<button class="zoom-btn" data-zoom="${seg.id}" title="Zoom map to this section" aria-label="Zoom to section"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001q.044.06.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1 1 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0M6.5 3a.5.5 0 0 1 .5.5V6h2.5a.5.5 0 0 1 0 1H7v2.5a.5.5 0 0 1-1 0V7H3.5a.5.5 0 0 1 0-1H6V3.5a.5.5 0 0 1 .5-.5"/></svg></button>` +
+      `</div>` +
+      `<div class="date-row"><label style="font-size:12px;color:var(--muted)">Date:</label><input type="date" data-date="${seg.id}" value="${escapeHtml(date)}" max="${today}" /></div>` +
+      `<div class="notes-row"><textarea data-note="${seg.id}" placeholder="Notes (weather, who you hiked with, conditions…)" rows="1">${escapeHtml(note)}</textarea></div>` +
+      `</div>`;
+  }
+  function updateSegRowInPlace(id) {
+    const el = document.querySelector(`[data-seg="${id}"]`);
+    if (!el) return;
+    const seg = segIndex.get(id);
+    if (!seg) return;
+    const totalMi = DATA.segments.reduce((a, s) => a + s.miles, 0);
+    const reverse = prefs.direction === "sobo";
+    el.outerHTML = segRowHTML(seg, reverse, totalMi);
+  }
   function renderSections() {
     if (prefs.viewMode === "trip") return renderTripView();
     const filterText = filterEl.value.trim().toLowerCase();
@@ -401,6 +447,8 @@
       const expandedByFilter = !!(filterText || onlyHiked || onlyPlanned);
       const isOpen = expandedByFilter || openStates.has(st.name);
       const collapsedClass = isOpen ? "" : " collapsed";
+      const CHUNK_SIZE = 30;
+      const useChunks = visible.length > CHUNK_SIZE && !filterText && !onlyHiked && !onlyPlanned;
       html.push(`<section class="state${collapsedClass}" data-state="${escapeHtml(st.name)}">`);
       html.push(`<header class="state-header">`);
       html.push(`<svg class="caret" viewBox="0 0 12 12" fill="currentColor"><path d="M3 4.5l3 3 3-3"/></svg>`);
@@ -408,27 +456,28 @@
       html.push(`<span class="state-stats"><span class="done">${hikedCount}</span>/${segs.length} · ${hikedMi.toFixed(1)}/${totalStateMi.toFixed(1)} mi</span>`);
       html.push(`</header>`);
       html.push(`<div class="state-body">`);
-      const today = todayISO();
-      for (const seg of visible) {
-        const hiked = progress.has(seg.id);
-        const date = progress.get(seg.id) || "";
-        const note = notes.get(seg.id) || "";
-        const cumStart = segCumulative.get(seg.id) || 0;
-        const displayMi = reverse ? (totalMi - (cumStart + seg.miles)) : cumStart;
-        const isPlanned = planned.has(seg.id);
-        html.push(`<div class="seg${hiked ? " hiked" : ""}${isPlanned ? " planned" : ""}" data-seg="${seg.id}">`);
-        html.push(`<input type="checkbox" data-toggle="${seg.id}" ${hiked ? "checked" : ""} title="Click to mark hiked; shift-click to mark a range"/>`);
-        html.push(`<div class="name">${escapeHtml(seg.from)}<span class="arrow">→</span>${escapeHtml(seg.to)}</div>`);
-        html.push(`<div class="miles"><span class="miles-text">${seg.miles.toFixed(1)} mi<span class="cum">@ ${displayMi.toFixed(1)} mi</span></span>` +
-          `<button class="plan-btn" data-plan="${seg.id}" title="${isPlanned ? "Remove from planned" : "Mark as next planned hike"}" aria-label="Toggle planned"><svg viewBox="0 0 16 16" fill="${isPlanned ? "currentColor" : "none"}" stroke="currentColor" stroke-width="1.4"><path d="M3 14V2.5L8 4.5L13 2.5V11.5L8 13.5L3 11.5"/></svg></button>` +
-          `<button class="zoom-btn" data-zoom="${seg.id}" title="Zoom map to this section" aria-label="Zoom to section"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001q.044.06.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1 1 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0M6.5 3a.5.5 0 0 1 .5.5V6h2.5a.5.5 0 0 1 0 1H7v2.5a.5.5 0 0 1-1 0V7H3.5a.5.5 0 0 1 0-1H6V3.5a.5.5 0 0 1 .5-.5"/></svg></button>` +
-          `</div>`);
-        html.push(`<div class="date-row">`);
-        html.push(`<label style="font-size:12px;color:var(--muted)">Date:</label>`);
-        html.push(`<input type="date" data-date="${seg.id}" value="${escapeHtml(date)}" max="${today}" />`);
-        html.push(`</div>`);
-        html.push(`<div class="notes-row"><textarea data-note="${seg.id}" placeholder="Notes (weather, who you hiked with, conditions…)" rows="1">${escapeHtml(note)}</textarea></div>`);
-        html.push(`</div>`);
+      if (useChunks) {
+        const chunks = [];
+        for (let i = 0; i < visible.length; i += CHUNK_SIZE) {
+          chunks.push(visible.slice(i, i + CHUNK_SIZE));
+        }
+        chunks.forEach((chunkSegs, ci) => {
+          const chunkKey = `${st.name}::${ci}`;
+          const chunkOpen = openChunks.has(chunkKey);
+          const firstName = chunkSegs[0].from;
+          const lastName = chunkSegs[chunkSegs.length - 1].to;
+          const chunkMi = chunkSegs.reduce((a, s) => a + s.miles, 0);
+          const chunkHikedMi = chunkSegs.filter((s) => progress.has(s.id)).reduce((a, s) => a + s.miles, 0);
+          html.push(`<div class="chunk${chunkOpen ? "" : " collapsed"}" data-chunk="${escapeHtml(chunkKey)}">`);
+          html.push(`<div class="chunk-header"><svg class="caret" viewBox="0 0 12 12" fill="currentColor"><path d="M3 4.5l3 3 3-3"/></svg>`);
+          html.push(`<span>${escapeHtml(firstName.slice(0, 30))} → ${escapeHtml(lastName.slice(0, 30))}</span>`);
+          html.push(`<span class="chunk-stats">${chunkHikedMi.toFixed(1)}/${chunkMi.toFixed(1)} mi</span></div>`);
+          html.push(`<div class="chunk-body">`);
+          for (const seg of chunkSegs) html.push(segRowHTML(seg, reverse, totalMi));
+          html.push(`</div></div>`);
+        });
+      } else {
+        for (const seg of visible) html.push(segRowHTML(seg, reverse, totalMi));
       }
       html.push(`</div></section>`);
     }
@@ -844,9 +893,9 @@
       if (planned.has(id)) planned.delete(id);
       else planned.add(id);
       saveProgress();
-      renderSections();
       updateStats();
       refreshMapStyles();
+      updateSegRowInPlace(id);
       return;
     }
     const zoomBtn = e.target.closest("[data-zoom]");
@@ -866,6 +915,15 @@
       }
       return;
     }
+    const chunkHeader = e.target.closest(".chunk-header");
+    if (chunkHeader) {
+      const chunkEl = chunkHeader.parentElement;
+      chunkEl.classList.toggle("collapsed");
+      const key = chunkEl.dataset.chunk;
+      if (chunkEl.classList.contains("collapsed")) openChunks.delete(key);
+      else openChunks.add(key);
+      return;
+    }
     const header = e.target.closest(".state-header");
     if (header) {
       const stateEl = header.parentElement;
@@ -879,29 +937,86 @@
     if (cb) {
       const id = Number(cb.dataset.toggle);
       const desired = cb.checked;
-      if (e.shiftKey && lastShiftAnchor !== null && lastShiftAnchor !== id) {
-        const ids = rangeIds(lastShiftAnchor, id);
-        // Roll back the visual flip from the click; modal will do the work.
+      // Multi-select (touch-friendly) and shift-click both behave the same:
+      // first tap sets an anchor, second tap completes the range.
+      const useRange = e.shiftKey
+        || (multiSelectMode && multiSelectAnchor !== null && multiSelectAnchor !== id);
+      const anchor = e.shiftKey ? lastShiftAnchor : multiSelectAnchor;
+      if (useRange && anchor !== null && anchor !== id) {
+        const ids = rangeIds(anchor, id);
+        // Roll back the visual flip from the click; the modal/bulk path does it.
         cb.checked = !desired;
-        lastShiftAnchor = id;
+        if (e.shiftKey) lastShiftAnchor = id;
+        if (multiSelectMode) {
+          multiSelectAnchor = null;
+          document.body.classList.remove("multi-select");
+          multiSelectMode = false;
+          $("multi-select-btn")?.setAttribute("aria-pressed", "false");
+        }
         if (desired) {
           openBulkDate(ids, true);
         } else {
-          // Bulk uncheck doesn't need a date prompt.
           for (const sid of ids) toggleSegment(sid, false);
           saveProgress();
-          renderSections();
           updateStats();
           refreshMapStyles();
+          for (const sid of ids) updateSegRowInPlace(sid);
+          updateAffectedStateHeaders(ids);
         }
+        return;
+      }
+      // Multi-select first tap: set anchor, no toggle yet
+      if (multiSelectMode && multiSelectAnchor === null) {
+        cb.checked = !desired; // revert visual flip
+        multiSelectAnchor = id;
+        document.querySelectorAll(".seg[data-anchor]").forEach((el) => el.removeAttribute("data-anchor"));
+        const row = cb.closest(".seg");
+        if (row) row.setAttribute("data-anchor", "true");
         return;
       }
       toggleSegment(id, desired);
       lastShiftAnchor = id;
       saveProgress();
-      renderSections();
       updateStats();
       refreshMapStyles();
+      updateSegRowInPlace(id);
+      updateAffectedStateHeaders([id]);
+      if (prefs.viewMode === "trip") renderSections(); // trip view groups by date — needs full re-render
+    }
+  }
+  function updateStateHeader(stateEl) {
+    const stateName = stateEl.dataset.state;
+    const segs = DATA.segments.filter((s) => s.state === stateName);
+    const hikedCount = segs.filter((s) => progress.has(s.id)).length;
+    const hikedMi = segs
+      .filter((s) => progress.has(s.id))
+      .reduce((a, s) => a + s.miles, 0);
+    const totalMi = segs.reduce((a, s) => a + s.miles, 0);
+    const stats = stateEl.querySelector(".state-stats");
+    if (stats) {
+      stats.innerHTML = `<span class="done">${hikedCount}</span>/${segs.length} · ${hikedMi.toFixed(1)}/${totalMi.toFixed(1)} mi`;
+    }
+    // Also update any chunk header stats inside this state
+    stateEl.querySelectorAll(".chunk").forEach((chunkEl) => {
+      const segs = [...chunkEl.querySelectorAll("[data-seg]")].map((el) => Number(el.dataset.seg));
+      const chunkSegObjs = segs.map((id) => segIndex.get(id)).filter(Boolean);
+      const cMi = chunkSegObjs.reduce((a, s) => a + s.miles, 0);
+      const cHikedMi = chunkSegObjs
+        .filter((s) => progress.has(s.id))
+        .reduce((a, s) => a + s.miles, 0);
+      const cs = chunkEl.querySelector(".chunk-stats");
+      if (cs) cs.textContent = `${cHikedMi.toFixed(1)}/${cMi.toFixed(1)} mi`;
+    });
+  }
+  function updateAffectedStateHeaders(ids) {
+    const states = new Set();
+    for (const id of ids) {
+      const seg = segIndex.get(id);
+      if (seg) states.add(seg.state);
+    }
+    for (const stateName of states) {
+      const stateEl = document.querySelector(`[data-state="${CSS.escape(stateName)}"]`);
+      if (stateEl) updateStateHeader(stateEl);
     }
   }
   function onSidebarChange(e) {
@@ -915,17 +1030,40 @@
         progress.set(id, val);
         saveProgress();
         if (prefs.colorByYear) refreshMapStyles();
+        // Trip view groups by date — re-render so the segment moves to its new group
+        if (prefs.viewMode === "trip") renderSections();
       }
     }
+  }
+  function toggleMultiSelect() {
+    multiSelectMode = !multiSelectMode;
+    multiSelectAnchor = null;
+    document.body.classList.toggle("multi-select", multiSelectMode);
+    document.querySelectorAll(".seg[data-anchor]").forEach((el) => el.removeAttribute("data-anchor"));
+    const btn = $("multi-select-btn");
+    if (btn) btn.setAttribute("aria-pressed", String(multiSelectMode));
+  }
+  function toggleLegend() {
+    const el = $("map-legend");
+    if (!el) return;
+    el.classList.toggle("collapsed");
+    try { localStorage.setItem("at-tracker-legend-collapsed", el.classList.contains("collapsed") ? "1" : ""); } catch (e) {}
   }
   function onSidebarInput(e) {
     const noteInput = e.target.closest("[data-note]");
     if (noteInput) {
       const id = Number(noteInput.dataset.note);
       notes.set(id, noteInput.value);
-      saveNotes();
+      clearTimeout(notesSaveTimer);
+      notesSaveTimer = setTimeout(() => { saveNotes(); notesSaveTimer = null; }, 500);
     }
   }
+  // Flush any pending note save on page hide so we never lose typing.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden" && notesSaveTimer) {
+      clearTimeout(notesSaveTimer); notesSaveTimer = null; saveNotes();
+    }
+  });
   function onSidebarHover(e) {
     const row = e.target;
     const id = Number(row.dataset.seg);
@@ -1336,6 +1474,14 @@
     filterEl.addEventListener("input", () => renderSections());
     filterHikedEl.addEventListener("change", () => renderSections());
     if (filterPlannedEl) filterPlannedEl.addEventListener("change", () => renderSections());
+    $("multi-select-btn")?.addEventListener("click", toggleMultiSelect);
+    $("legend-toggle")?.addEventListener("click", toggleLegend);
+    // Restore collapsed legend state from localStorage
+    try {
+      if (localStorage.getItem("at-tracker-legend-collapsed") === "1") {
+        $("map-legend")?.classList.add("collapsed");
+      }
+    } catch (e) {}
     directionEl.addEventListener("change", applyDirection);
     viewModeEl.addEventListener("change", applyViewMode);
     showSheltersEl.addEventListener("change", applyShelterToggle);
@@ -1404,5 +1550,14 @@
     document.addEventListener("DOMContentLoaded", boot);
   } else {
     boot();
+  }
+
+  // Register service worker for offline use. Only over http(s); skip on file://.
+  if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("./service-worker.js").catch((e) => {
+        console.warn("service worker registration failed:", e);
+      });
+    });
   }
 })();

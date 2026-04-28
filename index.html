@@ -42,6 +42,18 @@
     --map-bg: #1a1816;
   }
   body.theme-dark .leaflet-container { filter: brightness(0.85) contrast(1.05); }
+
+  /* Focus a11y */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  /* But map controls keep their default focus */
+  .leaflet-control :focus-visible { outline-offset: 0; }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--ink); background: var(--bg); }
   body { display: flex; flex-direction: column; }
@@ -274,10 +286,57 @@
   .map-legend .row { display: flex; align-items: center; gap: 6px; }
   .map-legend .swatch { width: 18px; height: 4px; border-radius: 2px; flex-shrink: 0; }
   .map-legend .swatch.shelter { width: 8px; height: 8px; border-radius: 50%; background: #e8a849; border: 1px solid #3a2d20; }
+  .map-legend.collapsed .legend-rows { display: none; }
+  .map-legend .legend-toggle {
+    border: none;
+    background: transparent;
+    padding: 0;
+    margin: 0 0 4px 0;
+    cursor: pointer;
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .map-legend.collapsed .legend-toggle { margin: 0; }
+  .map-legend .legend-toggle .arr {
+    display: inline-block;
+    transition: transform .15s;
+    font-size: 10px;
+  }
+  .map-legend.collapsed .legend-toggle .arr { transform: rotate(-90deg); }
 
   /* Profile selector */
   .profile-control { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
   .profile-control select { font: inherit; font-size: 12px; padding: 4px 6px; border: 1px solid var(--rule); border-radius: 4px; background: white; }
+
+  /* Multi-select active state */
+  body.multi-select #multi-select-btn { background: var(--accent); color: white; border-color: var(--accent); }
+  body.multi-select .seg [data-toggle] { outline: 2px dashed var(--accent); outline-offset: 2px; }
+  body.multi-select .seg[data-anchor=true] { background: rgba(139, 58, 47, 0.12); }
+  body.multi-select .seg[data-anchor=true] [data-toggle] { outline-color: var(--accent); }
+
+  /* Sub-chunk groups inside long states */
+  .chunk { border-top: 1px solid var(--rule); }
+  .chunk-header {
+    padding: 6px 12px 6px 24px;
+    background: var(--panel);
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    user-select: none;
+  }
+  .chunk-header:hover { background: var(--hover); }
+  .chunk-header .caret { width: 10px; transition: transform .15s ease; }
+  .chunk.collapsed .caret { transform: rotate(-90deg); }
+  .chunk.collapsed .chunk-body { display: none; }
+  .chunk-header .chunk-stats { margin-left: auto; font-variant-numeric: tabular-nums; }
 
   /* Print view */
   @media print {
@@ -351,6 +410,7 @@
         <input type="search" id="filter" placeholder="Filter segments / shelters…" />
         <label><input type="checkbox" id="filter-hiked" /> hiked only</label>
         <label><input type="checkbox" id="filter-planned" /> planned only</label>
+        <button id="multi-select-btn" type="button" title="Tap two segments to mark a range" aria-pressed="false" style="font-size: 12px; padding: 4px 8px;">Multi-select</button>
       </div>
       <div class="filter-row">
         <label>View:
@@ -482,14 +542,17 @@
 </style>
 
 <div class="map-legend leaflet-bar leaflet-control" id="map-legend" style="display:none;">
-  <div class="row"><span class="swatch" style="background:#7a4f3a"></span> AT trail</div>
-  <div class="row"><span class="swatch" style="background:#2a7d3a;height:5px"></span> hiked</div>
-  <div class="row"><span class="swatch" style="background:#1a5fb4;height:4px"></span> planned</div>
-  <div class="row"><span class="swatch shelter"></span> shelter</div>
+  <button class="legend-toggle" id="legend-toggle" aria-label="Toggle legend"><span class="arr">▾</span> legend</button>
+  <div class="legend-rows">
+    <div class="row"><span class="swatch" style="background:#7a4f3a"></span> AT trail</div>
+    <div class="row"><span class="swatch" style="background:#2a7d3a;height:5px"></span> hiked</div>
+    <div class="row"><span class="swatch" style="background:#1a5fb4;height:4px"></span> planned</div>
+    <div class="row"><span class="swatch shelter"></span> shelter</div>
+  </div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-<script src="app.js?v=9"></script>
+<script src="app.js?v=11"></script>
 </body>
 </html>
