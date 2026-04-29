@@ -59,6 +59,9 @@
   let multiSelectMode = false; // mobile-friendly bulk-select toggle
   let multiSelectAnchor = null; // first segId tapped while in multi-select mode
   let notesSaveTimer = null; // debounced notes flush
+  let cloudUser = null; // Firebase User when signed in
+  let cloudSaveTimer = null; // debounced cloud write
+  let cloudInhibit = false; // suppress writes during initial cloud->local merge
   let pendingApplyAfterHook = null; // optional callback after applyBulkDate
 
   // -------- Storage helpers --------
@@ -242,12 +245,14 @@
     if (activeProfile !== DEFAULT_PROFILE) params.set("p", activeProfile);
     const hash = params.toString();
     history.replaceState(null, "", hash ? `#${hash}` : location.pathname);
+    scheduleCloudSave();
   }
   function savePlanned() { saveProgress(); /* planned saves go through the same URL/LS path */ }
   function saveNotes() {
     const obj = {};
     for (const [k, v] of notes) if (v) obj[k] = v;
     safeSet(notesKey(activeProfile), JSON.stringify(obj));
+    scheduleCloudSave();
   }
   function savePrefs() { safeSet(LS_PREFS, JSON.stringify(prefs)); }
 
@@ -1276,6 +1281,144 @@
     refreshMapStyles();
   }
 
+  // -------- Cloud sync (Firebase Auth + Firestore) --------
+  function setSyncStatus(text, kind) {
+    const el = $("sync-status");
+    if (!el) return;
+    el.className = kind || "";
+    el.textContent = text || "";
+  }
+  function buildCloudPayload() {
+    // One Firestore doc per user. All profiles plus prefs in one place.
+    // Read each profile's data from localStorage.
+    const profileData = {};
+    for (const name of profiles) {
+      const prog = safeGet(progressKey(name));
+      const pl = safeGet(plannedKey(name));
+      const nt = safeGet(notesKey(name));
+      profileData[name] = {
+        hiked: prog ? safeJsonParse(prog, {}) : {},
+        planned: pl ? safeJsonParse(pl, []) : [],
+        notes: nt ? safeJsonParse(nt, {}) : {},
+      };
+    }
+    return {
+      profiles: profileData,
+      activeProfile,
+      profileNames: profiles,
+      prefs,
+    };
+  }
+  function safeJsonParse(s, fallback) {
+    try { return JSON.parse(s); } catch (e) { return fallback; }
+  }
+  function applyCloudData(data) {
+    if (!data) return;
+    cloudInhibit = true;
+    try {
+      const cloudProfiles = data.profileNames || Object.keys(data.profiles || {});
+      // Merge profile names: union of cloud + local
+      const merged = Array.from(new Set([...cloudProfiles, ...profiles]));
+      profiles = merged;
+      saveProfileList();
+      // Write each profile's cloud state to localStorage. Local-only profiles
+      // (not present in cloud) keep their existing data.
+      for (const [name, pdata] of Object.entries(data.profiles || {})) {
+        if (pdata.hiked) safeSet(progressKey(name), JSON.stringify(pdata.hiked));
+        if (pdata.planned) safeSet(plannedKey(name), JSON.stringify(pdata.planned));
+        if (pdata.notes) safeSet(notesKey(name), JSON.stringify(pdata.notes));
+      }
+      if (data.prefs) {
+        prefs = { ...prefs, ...data.prefs };
+        savePrefs();
+      }
+      // Reload current profile state from localStorage
+      const wantActive = data.activeProfile && profiles.includes(data.activeProfile)
+        ? data.activeProfile
+        : activeProfile;
+      activeProfile = wantActive;
+      saveActiveProfile();
+      progress = loadProgressForActive();
+      planned = loadPlannedForActive();
+      notes = loadNotesForActive();
+    } finally {
+      cloudInhibit = false;
+    }
+  }
+  function scheduleCloudSave() {
+    if (!cloudUser || cloudInhibit) return;
+    clearTimeout(cloudSaveTimer);
+    cloudSaveTimer = setTimeout(async () => {
+      if (!cloudUser) return;
+      setSyncStatus("syncing…", "syncing");
+      try {
+        await window.AT_AUTH.saveCloudData(cloudUser.uid, buildCloudPayload());
+        setSyncStatus("synced", "synced");
+        setTimeout(() => setSyncStatus("", ""), 2000);
+      } catch (e) {
+        console.warn("cloud save failed:", e);
+        setSyncStatus("offline (will retry)", "error");
+      }
+    }, 1500);
+  }
+  async function handleAuthChange(user) {
+    cloudUser = user || null;
+    const signinBtn = $("signin-btn");
+    const signoutBtn = $("signout-btn");
+    const nameEl = $("signed-in-as");
+    if (user) {
+      signinBtn.style.display = "none";
+      signoutBtn.style.display = "";
+      nameEl.style.display = "";
+      nameEl.textContent = user.email || user.displayName || "signed in";
+      setSyncStatus("loading…", "syncing");
+      try {
+        const cloud = await window.AT_AUTH.loadCloudData(user.uid);
+        if (cloud) {
+          // Merge: cloud takes precedence, but local-only profiles preserved.
+          applyCloudData(cloud);
+          renderProfileSelect();
+          renderSections();
+          updateStats();
+          refreshMapStyles();
+        }
+        // Always push current state up so cloud is current and local additions sync.
+        await window.AT_AUTH.saveCloudData(user.uid, buildCloudPayload());
+        setSyncStatus("synced", "synced");
+        setTimeout(() => setSyncStatus("", ""), 2000);
+      } catch (e) {
+        console.warn("initial cloud sync failed:", e);
+        setSyncStatus("sync error", "error");
+      }
+    } else {
+      signinBtn.style.display = "";
+      signoutBtn.style.display = "none";
+      nameEl.style.display = "none";
+      nameEl.textContent = "";
+      setSyncStatus("", "");
+    }
+  }
+  function wireAuthUI() {
+    if (!window.AT_AUTH) {
+      // The module hasn't loaded yet; wait for the ready event.
+      window.addEventListener("at-auth-ready", wireAuthUI, { once: true });
+      return;
+    }
+    window.AT_AUTH.onAuthChange(handleAuthChange);
+    $("signin-btn").addEventListener("click", async () => {
+      try {
+        setSyncStatus("opening sign-in…", "syncing");
+        await window.AT_AUTH.signInWithGoogle();
+      } catch (e) {
+        console.warn("sign-in failed:", e);
+        setSyncStatus(`sign-in failed: ${e.code || e.message}`, "error");
+      }
+    });
+    $("signout-btn").addEventListener("click", async () => {
+      try { await window.AT_AUTH.signOut(); } catch (e) {}
+    });
+  }
+
   // -------- Backup file (full state) --------
   function buildBackup() {
     return {
@@ -1631,6 +1774,8 @@
     document.querySelectorAll(".modal-bg").forEach((m) => {
       m.addEventListener("click", (e) => { if (e.target === m) m.classList.remove("show"); });
     });
+
+    wireAuthUI();
   }
 
   if (document.readyState === "loading") {
