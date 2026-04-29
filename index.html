@@ -613,7 +613,8 @@
     background: var(--input-bg);
     color: var(--ink);
   }
-  #planned-body .stress-bar {
+  /* Difficulty bar in the modal (large) */
+  #planned-body .diff-bar-row {
     margin: 12px 0 4px 0;
     padding: 8px 10px;
     border-radius: 6px;
@@ -621,13 +622,26 @@
     border: 1px solid var(--rule);
     display: grid;
     grid-template-columns: auto 1fr auto;
-    column-gap: 10px;
+    column-gap: 12px;
     align-items: center;
   }
-  #planned-body .stress-bar .emoji { font-size: 24px; line-height: 1; }
-  #planned-body .stress-bar .label { font-weight: 600; font-size: 13px; }
-  #planned-body .stress-bar .blurb { color: var(--muted); font-size: 11px; }
-  #planned-body .stress-bar .num { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--muted); }
+  #planned-body .diff-bar-row .grade {
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  #planned-body .diff-bar-row .grade .of { font-size: 12px; font-weight: 500; opacity: 0.7; margin-left: 1px; }
+  #planned-body .diff-bar-row .label { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  #planned-body .diff-bar-row .track { height: 8px; background: var(--rule); border-radius: 4px; overflow: hidden; }
+  #planned-body .diff-bar-row .fill { height: 100%; border-radius: 4px; transition: width .15s; }
+  #planned-body .diff-bar-row .num { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--muted); }
+
+  /* Compact difficulty badge used in section + itinerary rows */
+  .diff-badge { display: inline-flex; align-items: center; gap: 4px; vertical-align: middle; }
+  .diff-badge .diff-bar { display: inline-block; background: var(--rule); border-radius: 2px; overflow: hidden; vertical-align: middle; }
+  .diff-badge .diff-fill { display: block; height: 100%; }
+  .diff-badge .diff-num { font-variant-numeric: tabular-nums; font-weight: 600; }
   #planned-body .endpoints-list {
     display: flex;
     flex-wrap: wrap;
@@ -698,6 +712,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=18"></script>
+<script src="app.js?v=19"></script>
 </body>
 </html>

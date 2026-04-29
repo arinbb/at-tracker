@@ -217,6 +217,124 @@ def parse_town_subbusinesses(town: dict) -> list:
     return out
 
 
+AT_STATE_RELS = [
+    2007643, 18319351, 18321044, 19123292, 18330829, 18326382,
+    2007688, 3352289, 2991960, 392991, 18319298, 2007932,
+]
+OVERPASS_BASES = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+]
+
+
+def parse_ele(s):
+    """OSM elevations come as plain meters most of the time, but mappers
+    sometimes write '1234.5', '1234 m', '4030 ft', '4,030 ft'. Return meters
+    or None on failure."""
+    if not s:
+        return None
+    t = s.strip().replace(",", "").lower()
+    m = re.match(r"^(\-?[\d\.]+)\s*([a-z]*)", t)
+    if not m:
+        return None
+    try:
+        v = float(m.group(1))
+    except Exception:
+        return None
+    unit = m.group(2)
+    if unit in ("", "m", "meter", "meters", "metre", "metres"):
+        return int(round(v))
+    if unit in ("ft", "feet", "foot"):
+        return int(round(v * 0.3048))
+    return None
+
+
+def overpass_post(query: str) -> dict:
+    body = urllib.parse.urlencode({"data": query}).encode()
+    last_err = None
+    for base in OVERPASS_BASES:
+        for attempt in range(3):
+            try:
+                req = urllib.request.Request(
+                    base, data=body, headers={"User-Agent": USER_AGENT}
+                )
+                with urllib.request.urlopen(req, timeout=180) as r:
+                    return json.loads(r.read())
+            except Exception as e:
+                last_err = e
+                time.sleep(2 + attempt * 3)
+    raise RuntimeError(f"all overpass endpoints failed: {last_err}")
+
+
+def fetch_at_peaks_and_views() -> list:
+    """Query Overpass for `natural=peak` + `tourism=viewpoint` near each
+    AT state's relation. Cache each state's result. Only keep features
+    with a name (so unnamed bumps don't pollute the feature list).
+    """
+    cache_file = CACHE_DIR / "osm_peaks.json"
+    if cache_file.exists():
+        return json.loads(cache_file.read_text())
+
+    out = []
+    seen = set()
+    for rel_id in AT_STATE_RELS:
+        per_cache = CACHE_DIR / f"osm_peaks_rel_{rel_id}.json"
+        if per_cache.exists():
+            try:
+                rows = json.loads(per_cache.read_text())
+                out.extend(rows)
+                for r in rows:
+                    seen.add((round(r["lat"], 4), round(r["lon"], 4)))
+                continue
+            except Exception:
+                pass
+        q = f"""
+[out:json][timeout:300];
+rel({rel_id});>>;
+way._->.t;
+( node(around.t:1500)[natural=peak][name];
+  node(around.t:1500)[tourism=viewpoint][name]; );
+out;
+"""
+        try:
+            data = overpass_post(q)
+        except Exception as e:
+            print(f"  peaks rel {rel_id} failed: {e}")
+            continue
+        rows = []
+        for el in data.get("elements", []):
+            if el.get("type") != "node":
+                continue
+            tags = el.get("tags") or {}
+            name = (tags.get("name") or "").strip()
+            if not name:
+                continue
+            key = (round(el["lat"], 4), round(el["lon"], 4))
+            if key in seen:
+                continue
+            seen.add(key)
+            kind = "peak" if tags.get("natural") == "peak" else "view"
+            rows.append({
+                "id": f"osm_{el['id']}",
+                "slug": "",
+                "name": name,
+                "kind": kind,
+                "lat": el["lat"],
+                "lon": el["lon"],
+                "mi_springer": None,
+                "off": 0.0,
+                "off_dir": "",
+                "state": "",
+                "elev_m": parse_ele(tags.get("ele")),
+            })
+        per_cache.write_text(json.dumps(rows))
+        out.extend(rows)
+        time.sleep(2)
+    cache_file.write_text(json.dumps(out))
+    return out
+
+
 def main():
     sections = list_sections()
     print(f"sections: {len(sections)}")
@@ -275,6 +393,14 @@ def main():
             extra.append(sub)
     print(f"sub-businesses added: {len(extra)}")
     out.extend(extra)
+
+    # Third pass: pull notable peaks + viewpoints from OSM, near the AT.
+    try:
+        peaks = fetch_at_peaks_and_views()
+        print(f"OSM peaks/views added: {len(peaks)}")
+        out.extend(peaks)
+    except Exception as e:
+        print(f"  OSM peaks fetch failed (continuing): {e}")
 
     out.sort(key=lambda f: (f["mi_springer"] or 0))
     bundle = {

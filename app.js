@@ -824,20 +824,100 @@
     if (/(south end|north end)/i.test(n)) return { kind: "border", icon: "📍" };
     return { kind: "landmark", icon: "•" };
   }
-  // Given elevation feet per mile, return a stress descriptor.
-  // Bands chosen to match how AT hikers describe difficulty:
-  //   <100 ft/mi   = strolling (gentle ridges)
-  //   100-200      = moderate (most of NJ/PA)
-  //   200-350      = strenuous (most of GA/NC, Greylock)
-  //   350-550      = very strenuous (Whites approach, Roan)
-  //   >550         = brutal (Mahoosucs, Whites, Mount Madison)
+  // Convert elevation feet per mile to a continuous 1.0-10.0 difficulty grade
+  // calibrated to AT terrain. Bands and color picked to be readable at a glance
+  // and to roughly match how seasoned AT hikers describe each tier.
+  // Anchors:
+  //   ft/mi   ->   grade   ->   label
+  //     0           1.0         Flat
+  //    50           2.0         Gentle
+  //   100           3.0         Easy moderate
+  //   175           4.5         Moderate
+  //   275           6.0         Strenuous
+  //   400           7.5         Very strenuous
+  //   600           9.0         Brutal
+  //  1000+         10.0         Extreme
+  const DIFFICULTY_ANCHORS = [
+    [0,    1.0],
+    [50,   2.0],
+    [100,  3.0],
+    [175,  4.5],
+    [275,  6.0],
+    [400,  7.5],
+    [600,  9.0],
+    [1000, 10.0],
+  ];
+  function difficultyGrade(ftPerMi) {
+    if (!isFinite(ftPerMi) || ftPerMi <= 0) return 1.0;
+    for (let i = 0; i < DIFFICULTY_ANCHORS.length - 1; i++) {
+      const [x0, y0] = DIFFICULTY_ANCHORS[i];
+      const [x1, y1] = DIFFICULTY_ANCHORS[i + 1];
+      if (ftPerMi <= x1) {
+        const t = (ftPerMi - x0) / (x1 - x0);
+        return Math.round((y0 + t * (y1 - y0)) * 10) / 10;
+      }
+    }
+    return 10.0;
+  }
+  function difficultyLabel(grade) {
+    if (grade < 2.0) return "Flat";
+    if (grade < 3.0) return "Gentle";
+    if (grade < 4.5) return "Easy moderate";
+    if (grade < 6.0) return "Moderate";
+    if (grade < 7.5) return "Strenuous";
+    if (grade < 9.0) return "Very strenuous";
+    if (grade < 10.0) return "Brutal";
+    return "Extreme";
+  }
+  function difficultyColor(grade) {
+    // Smooth gradient from green (1.0) -> yellow (5) -> orange (7.5) -> deep red (10)
+    if (grade <= 5) {
+      // 1.0-5.0: green to yellow
+      const t = (grade - 1) / 4;
+      const r = Math.round(90 + t * 165);
+      const g = Math.round(140 - t * 20);
+      const b = Math.round(60 - t * 30);
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+    if (grade <= 7.5) {
+      // 5-7.5: yellow to orange
+      const t = (grade - 5) / 2.5;
+      const r = Math.round(255);
+      const g = Math.round(120 - t * 50);
+      const b = Math.round(30 - t * 20);
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+    // 7.5-10: orange to deep red
+    const t = (grade - 7.5) / 2.5;
+    const r = Math.round(255 - t * 100);
+    const g = Math.round(70 - t * 50);
+    const b = Math.round(10);
+    return `rgb(${r}, ${g}, ${b})`;
+  }
   function stressLevel(ftPerMi) {
-    if (!isFinite(ftPerMi) || ftPerMi <= 0) return { label: "Flat", emoji: "🪶", blurb: "negligible elevation change", color: "#7a8a55" };
-    if (ftPerMi < 100) return { label: "Easy", emoji: "😌", blurb: "gentle terrain — most hikers cover this comfortably", color: "#5b8a3a" };
-    if (ftPerMi < 200) return { label: "Moderate", emoji: "🙂", blurb: "rolling hills — average AT difficulty", color: "#7a9836" };
-    if (ftPerMi < 350) return { label: "Strenuous", emoji: "😅", blurb: "steady climbing — typical of GA/NC, Roan area", color: "#b5871f" };
-    if (ftPerMi < 550) return { label: "Very strenuous", emoji: "😰", blurb: "long climbs and steep grades — plan extra time", color: "#c46a1c" };
-    return { label: "Brutal", emoji: "🥵", blurb: "Whites/Mahoosucs territory — slow hike, low daily mileage", color: "#a23232" };
+    const grade = difficultyGrade(ftPerMi);
+    return {
+      grade,
+      label: difficultyLabel(grade),
+      color: difficultyColor(grade),
+    };
+  }
+  // Render a small color-graded bar with a numeric label, e.g. "7.2/10".
+  function difficultyBadgeHTML(ftPerMi, opts) {
+    const o = opts || {};
+    const stress = stressLevel(ftPerMi);
+    const widthPct = (stress.grade / 10) * 100;
+    const sizes = o.compact
+      ? { barW: 36, h: 4, font: 10 }
+      : { barW: 70, h: 6, font: 11 };
+    return (
+      `<span class="diff-badge" title="${stress.label} — ${Math.round(ftPerMi)} ft/mi">` +
+      `<span class="diff-bar" style="width:${sizes.barW}px;height:${sizes.h}px;">` +
+        `<span class="diff-fill" style="width:${widthPct}%;background:${stress.color};"></span>` +
+      `</span>` +
+      `<span class="diff-num" style="font-size:${sizes.font}px;color:${stress.color};">${stress.grade.toFixed(1)}</span>` +
+      `</span>`
+    );
   }
   // Collect all wikitrail features whose nearest segment is in the planned set.
   // Returns { kind: [features], ... }, deduped by feature id, sorted by mile.
@@ -941,11 +1021,13 @@
         `<span id="pace-out"><strong>${estDays}</strong> hike day${estDays === 1 ? "" : "s"}</span>` +
         `</div>`);
 
-      // Stress bar (only when we have elevation)
+      // Difficulty bar (only when we have elevation)
       if (hasElev) {
-        html.push(`<div class="stress-bar" style="border-color:${stress.color};">` +
-          `<div class="emoji">${stress.emoji}</div>` +
-          `<div><div class="label" style="color:${stress.color};">${stress.label}</div><div class="blurb">${stress.blurb}</div></div>` +
+        const widthPct = (stress.grade / 10) * 100;
+        html.push(`<div class="diff-bar-row" style="border-color:${stress.color};">` +
+          `<div class="grade" style="color:${stress.color};">${stress.grade.toFixed(1)}<span class="of">/10</span></div>` +
+          `<div class="meta"><div class="label" style="color:${stress.color};">${stress.label}</div>` +
+            `<div class="track"><div class="fill" style="width:${widthPct}%;background:${stress.color};"></div></div></div>` +
           `<div class="num">${Math.round(ftPerMi)} ft/mi</div>` +
           `</div>`);
       }
@@ -970,7 +1052,7 @@
           `<span class="seg-name" title="${escapeHtml(s.from)} → ${escapeHtml(s.to)}">${escapeHtml(s.from)} → ${escapeHtml(s.to)}${stateSuffix}</span>` +
           `<span class="mi">${s.miles.toFixed(1)} / ${cumMi.toFixed(1)}</span>` +
           (hasElev ? `<span class="seg-elev">${elevStr}</span>` : `<span></span>`) +
-          (hasElev ? `<span class="difficulty" style="color:${segStress.color};" title="${segStress.label}: ${Math.round(segFtPerMi)} ft/mi">${segStress.emoji}</span>` : `<span></span>`) +
+          (hasElev ? difficultyBadgeHTML(segFtPerMi, { compact: true }) : `<span></span>`) +
           `</div>`
         );
       }
@@ -982,6 +1064,8 @@
       // Wikitrail features along the planned route (towns, resupply, maildrops...)
       const featureBuckets = collectPlannedFeatures(plannedSegs);
       const FEATURE_GROUPS = [
+        { kind: "peak", emoji: "🏔", label: "Notable peaks" },
+        { kind: "view", emoji: "🌄", label: "Viewpoints" },
         { kind: "town", emoji: "🏘️", label: "Towns" },
         { kind: "maildrop", emoji: "📮", label: "Post offices / maildrops" },
         { kind: "resupply", emoji: "🏪", label: "Resupply (grocery / store)" },
@@ -1186,12 +1270,12 @@
       } else {
         hikeNum++;
         cumMi += d.miles;
-        const stress = stressLevel(d.miles > 0 ? (d.gain + d.loss) / d.miles : 0);
+        const dayFtPerMi = d.miles > 0 ? (d.gain + d.loss) / d.miles : 0;
         rows.push(
           `<div class="iti-row"><span class="iti-day">${dayOfWeek(d.date)}</span>` +
           `<span class="iti-date">${escapeHtml(d.date)}</span>` +
           `<span class="iti-text">Day ${hikeNum}: <strong>${escapeHtml(d.from)}</strong> → <strong>${d.toIcon} ${escapeHtml(d.to)}</strong></span>` +
-          `<span class="iti-stats">${d.miles.toFixed(1)} mi · ${cumMi.toFixed(1)} cum · +${Math.round(d.gain)}/−${Math.round(d.loss)} ft <span title="${stress.label}">${stress.emoji}</span></span>` +
+          `<span class="iti-stats">${d.miles.toFixed(1)} mi · ${cumMi.toFixed(1)} cum · +${Math.round(d.gain)}/−${Math.round(d.loss)} ft ${difficultyBadgeHTML(dayFtPerMi, { compact: true })}</span>` +
           `</div>`
         );
       }
