@@ -3,12 +3,13 @@
 // for true offline trail use the user can pan the map online to warm tile
 // caches, but no proactive tile prefetching is done.
 
-const CACHE = "at-tracker-v2";
+const CACHE = "at-tracker-v3";
 const ASSETS = [
   "./",
   "./index.html",
   "./app.js",
   "./at_data.json",
+  "./at_lore.json",
   "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css",
   "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js",
 ];

@@ -220,6 +220,43 @@
   }
   .seg .notes-row textarea::placeholder { color: #b3ada3; font-style: italic; }
 
+  /* Lore: read-only local-history snippet, only shown when present */
+  .seg .lore-btn {
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    padding: 0;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    color: #c89441;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-weight: 700;
+    font-size: 13px;
+    line-height: 1;
+  }
+  .seg .lore-btn:hover { background: var(--hover); color: #a07020; }
+  .seg .lore-row {
+    grid-column: 2 / 4;
+    display: none;
+    margin-top: 6px;
+    padding: 8px 10px;
+    background: rgba(232, 168, 73, 0.08);
+    border-left: 2px solid #c89441;
+    border-radius: 2px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--ink);
+  }
+  body.theme-dark .seg .lore-row { background: rgba(232, 168, 73, 0.10); }
+  .seg.lore-open .lore-row { display: block; }
+  .seg .lore-row .lore-title { font-weight: 700; display: block; margin-bottom: 2px; }
+  .seg .lore-row .lore-body { font-style: italic; }
+  .seg .lore-row .lore-url { display: inline-block; margin-top: 4px; font-size: 11px; color: var(--accent); }
+
   #map { flex: 1; min-width: 0; }
 
   /* Modal */
@@ -548,11 +585,12 @@
     <div class="row"><span class="swatch" style="background:#2a7d3a;height:5px"></span> hiked</div>
     <div class="row"><span class="swatch" style="background:#1a5fb4;height:4px"></span> planned</div>
     <div class="row"><span class="swatch shelter"></span> shelter</div>
+    <div class="row"><span class="swatch shelter" style="background:#fff;border:1.5px solid #c89441;color:#a07020;font-weight:700;font-size:9px;display:inline-flex;align-items:center;justify-content:center;width:10px;height:10px;line-height:1;">i</span> local lore</div>
   </div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-<script src="app.js?v=11"></script>
+<script src="app.js?v=12"></script>
 </body>
 </html>

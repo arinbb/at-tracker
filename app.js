@@ -4,6 +4,7 @@
  */
 (() => {
   const DATA_URL = "at_data.json";
+  const LORE_URL = "at_lore.json";
   const LS_PROFILES = "at-tracker-profiles-v1";
   const LS_ACTIVE = "at-tracker-active-profile-v1";
   const LS_PREFS = "at-tracker-prefs-v1";
@@ -31,6 +32,9 @@
 
   // -------- State --------
   let DATA = null;
+  let LORE = []; // loaded from at_lore.json
+  let loreBySegId = new Map(); // segId -> [lore entry, ...]
+  let loreLayer = null;
   let segIndex = new Map();
   let segCumulative = new Map();
   let progress = new Map();
@@ -381,6 +385,68 @@
       mi += s.miles;
     }
   }
+  // -------- Lore --------
+  function attachLoreToSegments() {
+    loreBySegId.clear();
+    if (!LORE || LORE.length === 0) return;
+    const MAX_KM = 1.0;
+    for (const entry of LORE) {
+      if (typeof entry.lat !== "number" || typeof entry.lon !== "number") continue;
+      let bestSeg = null, bestKm = Infinity;
+      for (const seg of DATA.segments) {
+        for (const [lon, lat] of seg.geom) {
+          const lat0 = ((lat + entry.lat) * 0.5) * Math.PI / 180;
+          const dx = (lon - entry.lon) * 111.32 * Math.cos(lat0);
+          const dy = (lat - entry.lat) * 110.574;
+          const km = Math.sqrt(dx * dx + dy * dy);
+          if (km < bestKm) { bestKm = km; bestSeg = seg; }
+        }
+      }
+      if (bestSeg && bestKm <= MAX_KM) {
+        if (!loreBySegId.has(bestSeg.id)) loreBySegId.set(bestSeg.id, []);
+        loreBySegId.get(bestSeg.id).push(entry);
+      }
+    }
+  }
+  function drawLoreOnMap() {
+    if (loreLayer) {
+      try { map.removeLayer(loreLayer); } catch (e) {}
+    }
+    loreLayer = L.layerGroup();
+    for (const entry of LORE) {
+      if (typeof entry.lat !== "number" || typeof entry.lon !== "number") continue;
+      const icon = L.divIcon({
+        className: "lore-marker",
+        html: '<div style="font-size:14px;line-height:1;background:#fff;border:1.5px solid #c89441;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;color:#a07020;font-weight:700;box-shadow:0 1px 3px rgba(0,0,0,.3);">i</div>',
+        iconSize: [20, 20],
+        iconAnchor: [10, 10],
+      });
+      const m = L.marker([entry.lat, entry.lon], { icon });
+      const safeBody = escapeHtml(entry.body || "");
+      const safeTitle = escapeHtml(entry.title || "");
+      const urlHtml = entry.url
+        ? `<br><a href="${escapeHtml(entry.url)}" target="_blank" rel="noopener" style="font-size:11px;">More on Wikipedia →</a>`
+        : "";
+      m.bindPopup(`<strong>${safeTitle}</strong><br><span style="font-style:italic">${safeBody}</span>${urlHtml}`, { maxWidth: 280 });
+      m.addTo(loreLayer);
+    }
+    loreLayer.addTo(map);
+  }
+  function loreButtonHTML(segId) {
+    const entries = loreBySegId.get(segId);
+    if (!entries || entries.length === 0) return "";
+    return `<button class="lore-btn" data-lore="${segId}" title="${escapeHtml(entries[0].title)}" aria-label="Show local history note">i</button>`;
+  }
+  function loreRowHTML(segId) {
+    const entries = loreBySegId.get(segId);
+    if (!entries || entries.length === 0) return "";
+    const parts = entries.map((entry) => {
+      const url = entry.url ? `<a class="lore-url" href="${escapeHtml(entry.url)}" target="_blank" rel="noopener">More →</a>` : "";
+      return `<span class="lore-title">${escapeHtml(entry.title)}</span><span class="lore-body">${escapeHtml(entry.body)}</span> ${url}`;
+    });
+    return `<div class="lore-row">${parts.join("<hr style='border:0;border-top:1px dashed var(--rule);margin:6px 0;'/>")}</div>`;
+  }
+
   function segRowHTML(seg, reverse, totalMi) {
     const hiked = progress.has(seg.id);
     const date = progress.get(seg.id) || "";
@@ -395,9 +461,11 @@
       `<div class="miles"><span class="miles-text">${seg.miles.toFixed(1)} mi<span class="cum">@ ${displayMi.toFixed(1)} mi</span></span>` +
       `<button class="plan-btn" data-plan="${seg.id}" title="${isPlanned ? "Remove from planned" : "Mark as next planned hike"}" aria-label="${isPlanned ? "Remove from planned" : "Mark as planned"}" aria-pressed="${isPlanned}"><svg viewBox="0 0 16 16" fill="${isPlanned ? "currentColor" : "none"}" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M4 1.5h8v13l-4-2.5-4 2.5z"/></svg></button>` +
       `<button class="zoom-btn" data-zoom="${seg.id}" title="Zoom map to this section" aria-label="Zoom to section"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001q.044.06.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1 1 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0M6.5 3a.5.5 0 0 1 .5.5V6h2.5a.5.5 0 0 1 0 1H7v2.5a.5.5 0 0 1-1 0V7H3.5a.5.5 0 0 1 0-1H6V3.5a.5.5 0 0 1 .5-.5"/></svg></button>` +
+      loreButtonHTML(seg.id) +
       `</div>` +
       `<div class="date-row"><label style="font-size:12px;color:var(--muted)">Date:</label><input type="date" data-date="${seg.id}" value="${escapeHtml(date)}" max="${today}" /></div>` +
       `<div class="notes-row"><textarea data-note="${seg.id}" placeholder="Notes (weather, who you hiked with, conditions…)" rows="1">${escapeHtml(note)}</textarea></div>` +
+      loreRowHTML(seg.id) +
       `</div>`;
   }
   function updateSegRowInPlace(id) {
@@ -885,6 +953,14 @@
 
   // -------- Event handlers --------
   function onSidebarClick(e) {
+    const loreBtn = e.target.closest("[data-lore]");
+    if (loreBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const row = loreBtn.closest(".seg");
+      if (row) row.classList.toggle("lore-open");
+      return;
+    }
     const planBtn = e.target.closest("[data-plan]");
     if (planBtn) {
       e.preventDefault();
@@ -1416,6 +1492,16 @@
     DATA.segments.forEach((s) => segIndex.set(s.id, s));
     computeCumulative();
 
+    // Load lore (optional — app still works without it).
+    try {
+      const lr = await fetch(LORE_URL, { cache: "no-cache" });
+      if (lr.ok) LORE = await lr.json();
+    } catch (e) {
+      console.warn("lore fetch failed, continuing without it:", e);
+      LORE = [];
+    }
+    attachLoreToSegments();
+
     // One-time migration: move legacy single-profile data into the new "Me" profile.
     const legacyProg = safeGet("at-tracker-progress-v1");
     const legacyNotes = safeGet("at-tracker-notes-v1");
@@ -1452,6 +1538,7 @@
     loadingEl.style.display = "none";
     renderProfileSelect();
     drawSegmentsOnMap();
+    drawLoreOnMap();
     renderSections();
     updateStats();
     refreshMapStyles();
