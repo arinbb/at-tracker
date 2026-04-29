@@ -264,27 +264,30 @@
     position: fixed; inset: 0;
     background: rgba(0,0,0,.4);
     display: none;
-    align-items: center;
-    justify-content: center;
     z-index: 1000;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 20px;
   }
-  .modal-bg.show { display: flex; }
+  .modal-bg.show { display: block; }
   .modal {
     background: var(--panel);
     border-radius: 8px;
     padding: 20px 24px;
     max-width: 520px;
-    width: 90%;
-    max-height: calc(100vh - 40px);
+    width: 100%;
+    margin: 0 auto;
     box-shadow: 0 10px 40px rgba(0,0,0,.2);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
   }
-  .modal h2 { flex-shrink: 0; }
-  .modal > p:first-of-type, .modal .modal-actions { flex-shrink: 0; }
-  /* Scrollable inner area - the "body" element of stats/planned modals */
-  #planned-body, #stats-body { overflow-y: auto; flex: 1 1 auto; min-height: 0; padding-right: 4px; }
+  /* Sticky bottom action row when content is long, so Close stays visible */
+  .modal .modal-actions {
+    position: sticky;
+    bottom: -20px;
+    background: var(--panel);
+    margin-top: 16px;
+    padding-top: 12px;
+    z-index: 1;
+  }
   .modal h2 { margin: 0 0 12px 0; font-size: 16px; }
   .modal p { margin: 8px 0; color: var(--muted); font-size: 13px; }
   .modal textarea, .modal input[type=text] {
@@ -695,6 +698,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=17"></script>
+<script src="app.js?v=18"></script>
 </body>
 </html>
