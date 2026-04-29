@@ -275,8 +275,16 @@
     padding: 20px 24px;
     max-width: 520px;
     width: 90%;
+    max-height: calc(100vh - 40px);
     box-shadow: 0 10px 40px rgba(0,0,0,.2);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
+  .modal h2 { flex-shrink: 0; }
+  .modal > p:first-of-type, .modal .modal-actions { flex-shrink: 0; }
+  /* Scrollable inner area - the "body" element of stats/planned modals */
+  #planned-body, #stats-body { overflow-y: auto; flex: 1 1 auto; min-height: 0; padding-right: 4px; }
   .modal h2 { margin: 0 0 12px 0; font-size: 16px; }
   .modal p { margin: 8px 0; color: var(--muted); font-size: 13px; }
   .modal textarea, .modal input[type=text] {
@@ -576,27 +584,21 @@
   #planned-body .stat-grid .val { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
   #planned-body h3 { font-size: 13px; margin: 16px 0 6px 0; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
   #planned-body .seg-line {
-    padding: 6px 0;
+    padding: 3px 0;
     border-bottom: 1px dashed var(--rule);
-    font-size: 12px;
+    font-size: 11.5px;
     display: grid;
-    grid-template-columns: 22px 1fr auto;
+    grid-template-columns: 36px minmax(0, 1fr) auto auto auto;
     column-gap: 8px;
-    align-items: baseline;
+    align-items: center;
+    line-height: 1.35;
   }
-  #planned-body .seg-line .seg-icons { font-size: 14px; line-height: 1; }
-  #planned-body .seg-line .seg-stats {
-    grid-column: 2 / 4;
-    margin-top: 2px;
-    font-size: 11px;
-    color: var(--muted);
-    display: flex;
-    gap: 10px;
-    flex-wrap: wrap;
-    font-variant-numeric: tabular-nums;
-  }
-  #planned-body .seg-line .seg-stats .difficulty { display: inline-flex; align-items: center; gap: 3px; }
-  #planned-body .seg-line .mi { color: var(--muted); margin-left: 6px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #planned-body .seg-line .seg-icons { font-size: 12px; line-height: 1; white-space: nowrap; opacity: 0.85; }
+  #planned-body .seg-line .seg-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  #planned-body .seg-line .seg-name small { color: var(--muted); }
+  #planned-body .seg-line .seg-elev { font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #planned-body .seg-line .difficulty { font-size: 12px; line-height: 1; cursor: help; }
+  #planned-body .seg-line .mi { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 11px; }
   #planned-body .empty { color: var(--muted); font-style: italic; padding: 12px 0; }
   #planned-body .pace-row { display: flex; align-items: center; gap: 8px; margin: 6px 0 0 0; font-size: 12px; }
   #planned-body .pace-row input[type=number] {
@@ -637,6 +639,25 @@
     align-items: center;
     gap: 4px;
   }
+  #planned-body .iti-summary {
+    font-size: 11px;
+    color: var(--muted);
+    padding: 4px 0 8px;
+  }
+  #planned-body .iti-row {
+    display: grid;
+    grid-template-columns: 36px 88px minmax(0, 1fr) auto;
+    gap: 6px 10px;
+    padding: 4px 0;
+    border-bottom: 1px dashed var(--rule);
+    font-size: 11.5px;
+    align-items: center;
+  }
+  #planned-body .iti-row.iti-zero { color: var(--muted); font-style: italic; }
+  #planned-body .iti-row .iti-day { font-size: 10px; color: var(--muted); text-transform: uppercase; }
+  #planned-body .iti-row .iti-date { font-variant-numeric: tabular-nums; font-size: 11px; color: var(--muted); }
+  #planned-body .iti-row .iti-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  #planned-body .iti-row .iti-stats { font-variant-numeric: tabular-nums; font-size: 11px; color: var(--muted); white-space: nowrap; }
 </style>
 
 <div class="modal-bg" id="stats-modal">
@@ -674,6 +695,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=14"></script>
+<script src="app.js?v=17"></script>
 </body>
 </html>

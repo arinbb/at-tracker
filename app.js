@@ -32,6 +32,8 @@
 
   // -------- State --------
   let DATA = null;
+  let FEATURES = null; // {features:[...]} from at_features.json
+  let segFeatures = new Map(); // segId -> [feature, ...]
   let LORE = []; // loaded from at_lore.json
   let loreBySegId = new Map(); // segId -> [lore entry, ...]
   let loreLayer = null;
@@ -47,6 +49,8 @@
     viewMode: "state",
     theme: null, // null = follow system; "light" or "dark" = explicit
     pace: 12, // mi/day for trip-day estimates
+    tripStartDate: null, // ISO date for the planned trip start
+    zeroDayFreq: 0, // insert a rest day every N hike days; 0 = none
   };
   let profiles = [DEFAULT_PROFILE];
   let activeProfile = DEFAULT_PROFILE;
@@ -389,6 +393,39 @@
     for (const s of sorted) {
       segCumulative.set(s.id, mi);
       mi += s.miles;
+    }
+  }
+  // Match each feature to its closest segment by lat/lon. Skip features
+  // farther than 6mi from any segment (likely not on the AT). For matched
+  // features, store on segFeatures[segId] = [...features]. Most features
+  // are at the same location as multiple segment endpoints, so many segments
+  // get one or two features each.
+  function matchFeaturesToSegments() {
+    if (!FEATURES || !FEATURES.features) return;
+    segFeatures = new Map();
+    // Pre-extract midpoints for speed
+    const segMid = DATA.segments.map((s) => {
+      const c = s.geom;
+      const mid = c[Math.floor(c.length / 2)];
+      return { id: s.id, lon: mid[0], lat: mid[1], state: s.state };
+    });
+    const KM_PER_MI = 1.609344;
+    const MAX_KM = 8 * KM_PER_MI;
+    for (const f of FEATURES.features) {
+      if (typeof f.lat !== "number" || typeof f.lon !== "number") continue;
+      let bestSeg = null;
+      let bestKm = Infinity;
+      for (const m of segMid) {
+        const lat0 = (m.lat + f.lat) * 0.5 * Math.PI / 180;
+        const dx = (m.lon - f.lon) * 111.32 * Math.cos(lat0);
+        const dy = (m.lat - f.lat) * 110.574;
+        const km = Math.sqrt(dx * dx + dy * dy);
+        if (km < bestKm) { bestKm = km; bestSeg = m; }
+      }
+      if (bestSeg && bestKm <= MAX_KM) {
+        if (!segFeatures.has(bestSeg.id)) segFeatures.set(bestSeg.id, []);
+        segFeatures.get(bestSeg.id).push(f);
+      }
     }
   }
   // -------- Lore --------
@@ -802,6 +839,27 @@
     if (ftPerMi < 550) return { label: "Very strenuous", emoji: "😰", blurb: "long climbs and steep grades — plan extra time", color: "#c46a1c" };
     return { label: "Brutal", emoji: "🥵", blurb: "Whites/Mahoosucs territory — slow hike, low daily mileage", color: "#a23232" };
   }
+  // Collect all wikitrail features whose nearest segment is in the planned set.
+  // Returns { kind: [features], ... }, deduped by feature id, sorted by mile.
+  function collectPlannedFeatures(plannedSegs) {
+    const buckets = {};
+    if (!FEATURES) return buckets;
+    const seen = new Set();
+    for (const s of plannedSegs) {
+      const fs = segFeatures.get(s.id);
+      if (!fs) continue;
+      for (const f of fs) {
+        if (seen.has(f.id)) continue;
+        seen.add(f.id);
+        if (!buckets[f.kind]) buckets[f.kind] = [];
+        buckets[f.kind].push(f);
+      }
+    }
+    for (const kind in buckets) {
+      buckets[kind].sort((a, b) => (a.mi_springer || 0) - (b.mi_springer || 0));
+    }
+    return buckets;
+  }
   function renderPlannedSummary() {
     const plannedSegs = [...planned]
       .filter((id) => !progress.has(id))
@@ -873,9 +931,15 @@
       html.push(grid(statsRows));
 
       // Pace + estimated trip days. Live-recomputes when user changes pace.
-      html.push(`<div class="pace-row"><label>Pace: <input type="number" id="pace-input" min="1" max="40" step="0.5" value="${pace}" /> mi/day</label>` +
+      const startDate = prefs.tripStartDate || todayISO();
+      const zeroFreq = prefs.zeroDayFreq != null ? prefs.zeroDayFreq : 0;
+      html.push(`<div class="pace-row">` +
+        `<label>Pace: <input type="number" id="pace-input" min="1" max="40" step="0.5" value="${pace}" /> mi/day</label>` +
+        `<label style="margin-left:6px;">Start: <input type="date" id="trip-start" value="${escapeHtml(startDate)}" /></label>` +
+        `<label style="margin-left:6px;">Zero day every <input type="number" id="zero-freq" min="0" max="14" step="1" value="${zeroFreq}" style="width:48px;" /> days (0 = none)</label>` +
         `<span style="color:var(--muted);">→</span>` +
-        `<span id="pace-out"><strong>${estDays}</strong> day${estDays === 1 ? "" : "s"}</span></div>`);
+        `<span id="pace-out"><strong>${estDays}</strong> hike day${estDays === 1 ? "" : "s"}</span>` +
+        `</div>`);
 
       // Stress bar (only when we have elevation)
       if (hasElev) {
@@ -886,35 +950,58 @@
           `</div>`);
       }
 
-      // Sections — show with classification icon, mini stats, per-section difficulty
-      html.push(`<h3>Sections</h3>`);
+      // Sections — compact one-line-per-segment listing
+      const showState = states.length > 1;
+      html.push(`<h3>Sections (${plannedSegs.length})</h3>`);
       let cumMi = 0;
       for (const s of plannedSegs) {
         cumMi += s.miles;
         const fromKind = breakpointKind(s.from);
         const toKind = breakpointKind(s.to);
-        const segGain = s.elev_gain || 0;
-        const segLoss = s.elev_loss || 0;
+        const segGain = Math.round(s.elev_gain || 0);
+        const segLoss = Math.round(s.elev_loss || 0);
         const segFtPerMi = s.miles > 0 ? (segGain + segLoss) / s.miles : 0;
         const segStress = stressLevel(segFtPerMi);
-        const segIcons = `${fromKind.icon} → ${toKind.icon}`;
-        const elevStr = hasElev
-          ? `+${Math.round(segGain)} / −${Math.round(segLoss)} ft`
-          : "";
+        const elevStr = hasElev ? `+${segGain.toLocaleString()}/−${segLoss.toLocaleString()}` : "";
+        const stateSuffix = showState ? ` <small>· ${escapeHtml(s.state.replace("North Carolina/Tennessee", "NC/TN").replace("New Jersey/New York", "NJ/NY"))}</small>` : "";
         html.push(
           `<div class="seg-line">` +
-          `<span class="seg-icons" title="${fromKind.kind} → ${toKind.kind}">${segIcons}</span>` +
-          `<span><span>${escapeHtml(s.from)}</span> → <span>${escapeHtml(s.to)}</span> <small style="color:var(--muted)">(${escapeHtml(s.state)})</small></span>` +
-          `<span class="mi">${s.miles.toFixed(1)} mi · ${cumMi.toFixed(1)} cum</span>` +
-          (hasElev ? `<span class="seg-stats">` +
-            `<span>${elevStr}</span>` +
-            `<span class="difficulty" style="color:${segStress.color};" title="${segStress.label}: ${Math.round(segFtPerMi)} ft/mi">${segStress.emoji} ${segStress.label}</span>` +
-            `</span>` : "") +
+          `<span class="seg-icons" title="${fromKind.kind} → ${toKind.kind}">${fromKind.icon}→${toKind.icon}</span>` +
+          `<span class="seg-name" title="${escapeHtml(s.from)} → ${escapeHtml(s.to)}">${escapeHtml(s.from)} → ${escapeHtml(s.to)}${stateSuffix}</span>` +
+          `<span class="mi">${s.miles.toFixed(1)} / ${cumMi.toFixed(1)}</span>` +
+          (hasElev ? `<span class="seg-elev">${elevStr}</span>` : `<span></span>`) +
+          (hasElev ? `<span class="difficulty" style="color:${segStress.color};" title="${segStress.label}: ${Math.round(segFtPerMi)} ft/mi">${segStress.emoji}</span>` : `<span></span>`) +
           `</div>`
         );
       }
 
-      // Endpoint chips
+      // Calendar / itinerary — day-by-day breakdown
+      html.push(`<h3>📅 Day-by-day plan</h3>`);
+      html.push(`<div id="planned-itinerary"></div>`);
+
+      // Wikitrail features along the planned route (towns, resupply, maildrops...)
+      const featureBuckets = collectPlannedFeatures(plannedSegs);
+      const FEATURE_GROUPS = [
+        { kind: "town", emoji: "🏘️", label: "Towns" },
+        { kind: "maildrop", emoji: "📮", label: "Post offices / maildrops" },
+        { kind: "resupply", emoji: "🏪", label: "Resupply (grocery / store)" },
+        { kind: "outfitter", emoji: "🥾", label: "Outfitters" },
+        { kind: "hostel", emoji: "🛏", label: "Hostels" },
+        { kind: "hotel", emoji: "🏨", label: "Hotels / motels" },
+        { kind: "restaurant", emoji: "🍽", label: "Restaurants / bars" },
+        { kind: "service", emoji: "🚐", label: "Shuttles / laundry" },
+        { kind: "medical", emoji: "🏥", label: "Medical" },
+      ];
+      for (const g of FEATURE_GROUPS) {
+        const items = featureBuckets[g.kind];
+        if (!items || items.length === 0) continue;
+        html.push(`<h3>${g.emoji} ${g.label} (${items.length})</h3>`);
+        html.push(`<div class="endpoints-list">${items.map((f) =>
+          `<span class="ep" title="${f.off > 0 ? `${f.off}${f.off_dir} from trail` : "on trail"}${f.parent_town ? ` · in ${escapeHtml(f.parent_town)}` : ""}">${g.emoji} ${escapeHtml(f.name)}${f.off > 0 ? ` <small style="color:var(--muted);">${f.off}${f.off_dir}</small>` : ""}</span>`
+        ).join("")}</div>`);
+      }
+
+      // Endpoint chips (from segment endpoints, not features)
       if (shelters.length > 0) {
         html.push(`<h3>🛖 Shelters on route</h3>`);
         html.push(`<div class="endpoints-list">${shelters.map((n) => `<span class="ep">🛖 ${escapeHtml(n)}</span>`).join("")}</div>`);
@@ -932,18 +1019,190 @@
     $("planned-body").innerHTML = html.join("");
     $("planned-modal").classList.add("show");
 
-    // Wire pace input live recompute (no full re-render — just update the days span)
-    const paceInput = $("pace-input");
-    if (paceInput) {
-      paceInput.addEventListener("input", () => {
-        const v = Math.max(1, Math.min(50, Number(paceInput.value) || 12));
-        prefs.pace = v;
-        savePrefs();
-        const newDays = totalMi > 0 ? Math.max(1, Math.round(totalMi / v)) : 0;
-        const out = $("pace-out");
-        if (out) out.innerHTML = `<strong>${newDays}</strong> day${newDays === 1 ? "" : "s"}`;
+    // Wire pace, start date, zero-day inputs — all live-recompute the itinerary
+    const recomputeItinerary = () => {
+      const v = Math.max(1, Math.min(50, Number($("pace-input").value) || 12));
+      prefs.pace = v;
+      const startEl = $("trip-start");
+      if (startEl && startEl.value) prefs.tripStartDate = startEl.value;
+      const zEl = $("zero-freq");
+      if (zEl) prefs.zeroDayFreq = Math.max(0, Math.min(14, Number(zEl.value) || 0));
+      savePrefs();
+      const newDays = totalMi > 0 ? Math.max(1, Math.round(totalMi / v)) : 0;
+      const out = $("pace-out");
+      if (out) out.innerHTML = `<strong>${newDays}</strong> hike day${newDays === 1 ? "" : "s"}`;
+      const ititem = $("planned-itinerary");
+      if (ititem) ititem.innerHTML = renderItineraryHTML(plannedSegs, v, prefs.tripStartDate || todayISO(), prefs.zeroDayFreq || 0);
+    };
+    ["pace-input", "trip-start", "zero-freq"].forEach((id) => {
+      const el = $(id);
+      if (el) el.addEventListener("input", recomputeItinerary);
+    });
+    // Initial render of the calendar
+    const itEl = $("planned-itinerary");
+    if (itEl) itEl.innerHTML = renderItineraryHTML(plannedSegs, pace, startDate, zeroFreq);
+  }
+  // Build a day-by-day plan: walk planned segments in order, accumulating
+  // miles up to `pace`. Prefer to stop at a shelter endpoint near the day's
+  // target. Insert zero days at the configured frequency.
+  function buildItinerary(plannedSegs, paceMi, startISO, zeroFreq) {
+    const days = [];
+    let curMi = 0;
+    let curGain = 0;
+    let curLoss = 0;
+    let dayStart = plannedSegs.length > 0 ? plannedSegs[0].from : null;
+    let segIdx = 0;
+    let consumedMiInCurSeg = 0; // miles used out of the current segment
+    while (segIdx < plannedSegs.length) {
+      const target = paceMi;
+      // Walk forward until we hit target or run out of segments
+      let dayMi = 0;
+      let dayGain = 0;
+      let dayLoss = 0;
+      let dayEnd = null;
+      let dayEndKind = null;
+      // A list of (mi-into-day, segEndName, segEndKind, gainSoFar, lossSoFar, segIdxAfter)
+      const candidateStops = [];
+      while (segIdx < plannedSegs.length) {
+        const s = plannedSegs[segIdx];
+        const remaining = s.miles - consumedMiInCurSeg;
+        if (dayMi + remaining < target - 0.01) {
+          // Use this whole segment, not yet at target
+          dayMi += remaining;
+          dayGain += (s.elev_gain || 0) * (remaining / s.miles);
+          dayLoss += (s.elev_loss || 0) * (remaining / s.miles);
+          consumedMiInCurSeg = 0;
+          segIdx++;
+          const k = breakpointKind(s.to);
+          candidateStops.push({
+            mi: dayMi, gain: dayGain, loss: dayLoss,
+            end: s.to, endKind: k.kind, endIcon: k.icon,
+            segIdxAfter: segIdx,
+          });
+        } else {
+          // We could finish this segment OR stop short. We prefer to finish at
+          // a segment endpoint when it's reasonably close to target.
+          const finishMi = dayMi + remaining;
+          const overshoot = finishMi - target;
+          // If overshooting <= 1.5 mi we'll just go to the segment end.
+          if (overshoot <= 1.5) {
+            dayMi = finishMi;
+            dayGain += (s.elev_gain || 0) * (remaining / s.miles);
+            dayLoss += (s.elev_loss || 0) * (remaining / s.miles);
+            const k = breakpointKind(s.to);
+            candidateStops.push({
+              mi: dayMi, gain: dayGain, loss: dayLoss,
+              end: s.to, endKind: k.kind, endIcon: k.icon,
+              segIdxAfter: segIdx + 1,
+            });
+            consumedMiInCurSeg = 0;
+            segIdx++;
+          }
+          break;
+        }
+      }
+      // Pick the best candidate stop: prefer shelter endpoints close to target.
+      let chosen = null;
+      if (candidateStops.length > 0) {
+        // Score: shelters preferred, then proximity to target.
+        const scored = candidateStops.map((c) => ({
+          ...c,
+          score: (c.endKind === "shelter" ? 0 : c.endKind === "road" ? 0.3 : 0.6) +
+                 Math.abs(c.mi - target) * 0.05,
+        }));
+        scored.sort((a, b) => a.score - b.score);
+        chosen = scored[0];
+      } else if (segIdx < plannedSegs.length) {
+        // Couldn't even finish a single segment — split it (rare)
+        const s = plannedSegs[segIdx];
+        const usable = Math.min(target, s.miles - consumedMiInCurSeg);
+        consumedMiInCurSeg += usable;
+        dayMi = usable;
+        dayGain = (s.elev_gain || 0) * (usable / s.miles);
+        dayLoss = (s.elev_loss || 0) * (usable / s.miles);
+        chosen = {
+          mi: dayMi, gain: dayGain, loss: dayLoss,
+          end: `mid-segment (${s.from} → ${s.to})`, endKind: "split", endIcon: "✂️",
+          segIdxAfter: segIdx + (consumedMiInCurSeg >= s.miles ? 1 : 0),
+        };
+        if (consumedMiInCurSeg >= s.miles) { consumedMiInCurSeg = 0; segIdx++; }
+      } else {
+        break;
+      }
+      days.push({
+        from: dayStart,
+        to: chosen.end,
+        toIcon: chosen.endIcon,
+        toKind: chosen.endKind,
+        miles: chosen.mi,
+        gain: chosen.gain,
+        loss: chosen.loss,
       });
+      dayStart = chosen.end;
+      curMi += chosen.mi;
+      curGain += chosen.gain;
+      curLoss += chosen.loss;
     }
+    // Apply start date + zero days
+    const out = [];
+    let hikeDayCount = 0;
+    let date = parseISODate(startISO);
+    for (const d of days) {
+      out.push({ kind: "hike", date: formatISODate(date), ...d });
+      hikeDayCount++;
+      // Advance one day
+      date.setUTCDate(date.getUTCDate() + 1);
+      // Insert a zero day if frequency hits
+      if (zeroFreq > 0 && hikeDayCount % zeroFreq === 0) {
+        out.push({ kind: "zero", date: formatISODate(date) });
+        date.setUTCDate(date.getUTCDate() + 1);
+      }
+    }
+    return out;
+  }
+  function parseISODate(s) {
+    const [y, m, d] = (s || todayISO()).split("-").map(Number);
+    return new Date(Date.UTC(y, (m || 1) - 1, d || 1));
+  }
+  function formatISODate(d) {
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+  }
+  function dayOfWeek(iso) {
+    const [y, m, d] = iso.split("-").map(Number);
+    return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString(undefined, { weekday: "short", timeZone: "UTC" });
+  }
+  function renderItineraryHTML(plannedSegs, pace, startISO, zeroFreq) {
+    if (plannedSegs.length === 0) return "";
+    const itinerary = buildItinerary(plannedSegs, pace, startISO, zeroFreq);
+    const rows = [];
+    let cumMi = 0, hikeNum = 0;
+    for (const d of itinerary) {
+      if (d.kind === "zero") {
+        rows.push(
+          `<div class="iti-row iti-zero"><span class="iti-day">${dayOfWeek(d.date)}</span>` +
+          `<span class="iti-date">${escapeHtml(d.date)}</span>` +
+          `<span class="iti-text">🛌 Zero day · rest in town</span><span></span></div>`
+        );
+      } else {
+        hikeNum++;
+        cumMi += d.miles;
+        const stress = stressLevel(d.miles > 0 ? (d.gain + d.loss) / d.miles : 0);
+        rows.push(
+          `<div class="iti-row"><span class="iti-day">${dayOfWeek(d.date)}</span>` +
+          `<span class="iti-date">${escapeHtml(d.date)}</span>` +
+          `<span class="iti-text">Day ${hikeNum}: <strong>${escapeHtml(d.from)}</strong> → <strong>${d.toIcon} ${escapeHtml(d.to)}</strong></span>` +
+          `<span class="iti-stats">${d.miles.toFixed(1)} mi · ${cumMi.toFixed(1)} cum · +${Math.round(d.gain)}/−${Math.round(d.loss)} ft <span title="${stress.label}">${stress.emoji}</span></span>` +
+          `</div>`
+        );
+      }
+    }
+    const hikeDays = itinerary.filter((d) => d.kind === "hike").length;
+    const zeroDays = itinerary.filter((d) => d.kind === "zero").length;
+    const totalDays = hikeDays + zeroDays;
+    const summary = `<div class="iti-summary">${hikeDays} hike day${hikeDays === 1 ? "" : "s"}` +
+      (zeroDays > 0 ? ` + ${zeroDays} zero day${zeroDays === 1 ? "" : "s"} = ${totalDays} total` : "") +
+      `</div>`;
+    return summary + rows.join("");
   }
   function clearAllPlanned() {
     if (planned.size === 0) return;
@@ -1706,6 +1965,18 @@
     DATA = data;
     DATA.segments.forEach((s) => segIndex.set(s.id, s));
     computeCumulative();
+
+    // Load wikitrail features (resupply, maildrop, hostel, hotel, restaurant, etc.)
+    // Optional — app keeps working if file is missing.
+    try {
+      const fr = await fetch("at_features.json", { cache: "no-cache" });
+      if (fr.ok) {
+        FEATURES = await fr.json();
+        matchFeaturesToSegments();
+      }
+    } catch (e) {
+      console.warn("at_features.json load failed:", e);
+    }
 
     // Load lore (optional — app still works without it).
     try {
