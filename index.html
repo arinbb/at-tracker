@@ -575,9 +575,68 @@
   #planned-body .stat-grid .label { color: var(--muted); }
   #planned-body .stat-grid .val { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
   #planned-body h3 { font-size: 13px; margin: 16px 0 6px 0; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-  #planned-body .seg-line { padding: 4px 0; border-bottom: 1px dashed var(--rule); font-size: 12px; }
-  #planned-body .seg-line .mi { color: var(--muted); margin-left: 6px; font-variant-numeric: tabular-nums; }
+  #planned-body .seg-line {
+    padding: 6px 0;
+    border-bottom: 1px dashed var(--rule);
+    font-size: 12px;
+    display: grid;
+    grid-template-columns: 22px 1fr auto;
+    column-gap: 8px;
+    align-items: baseline;
+  }
+  #planned-body .seg-line .seg-icons { font-size: 14px; line-height: 1; }
+  #planned-body .seg-line .seg-stats {
+    grid-column: 2 / 4;
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    font-variant-numeric: tabular-nums;
+  }
+  #planned-body .seg-line .seg-stats .difficulty { display: inline-flex; align-items: center; gap: 3px; }
+  #planned-body .seg-line .mi { color: var(--muted); margin-left: 6px; font-variant-numeric: tabular-nums; white-space: nowrap; }
   #planned-body .empty { color: var(--muted); font-style: italic; padding: 12px 0; }
+  #planned-body .pace-row { display: flex; align-items: center; gap: 8px; margin: 6px 0 0 0; font-size: 12px; }
+  #planned-body .pace-row input[type=number] {
+    width: 56px;
+    font: inherit;
+    padding: 3px 6px;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    background: var(--input-bg);
+    color: var(--ink);
+  }
+  #planned-body .stress-bar {
+    margin: 12px 0 4px 0;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--panel-alt);
+    border: 1px solid var(--rule);
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    column-gap: 10px;
+    align-items: center;
+  }
+  #planned-body .stress-bar .emoji { font-size: 24px; line-height: 1; }
+  #planned-body .stress-bar .label { font-weight: 600; font-size: 13px; }
+  #planned-body .stress-bar .blurb { color: var(--muted); font-size: 11px; }
+  #planned-body .stress-bar .num { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--muted); }
+  #planned-body .endpoints-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    font-size: 12px;
+  }
+  #planned-body .endpoints-list .ep {
+    background: var(--panel-alt);
+    padding: 2px 8px;
+    border-radius: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
 </style>
 
 <div class="modal-bg" id="stats-modal">
@@ -615,6 +674,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=13"></script>
+<script src="app.js?v=14"></script>
 </body>
 </html>

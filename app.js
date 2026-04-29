@@ -46,6 +46,7 @@
     colorByYear: false,
     viewMode: "state",
     theme: null, // null = follow system; "light" or "dark" = explicit
+    pace: 12, // mi/day for trip-day estimates
   };
   let profiles = [DEFAULT_PROFILE];
   let activeProfile = DEFAULT_PROFILE;
@@ -777,8 +778,31 @@
   }
 
   // -------- Planned summary --------
+  // Classify a breakpoint name. Returns { kind, icon } where kind is one of
+  // "shelter" | "road" | "border" | "landmark".
+  function breakpointKind(name) {
+    const n = String(name || "");
+    if (/shelter|lean.?to|cabin|hut|campsite/i.test(n)) return { kind: "shelter", icon: "🛖" };
+    if (/\(US\s|\(SR\s|\(VA\s|\(NC\s|\(TN\s|\(NY\s|\(VT\s|\(NH\s|\(ME\s|\(CT\s|\(MA\s|\(GA\s|\(PA\s|\(MD\s|\(WV\s|\(NJ\s|Highway|Pkwy|Parkway|Road|Avenue|Boulevard|Drive|Pike|Route\s|\bRd\b|\bSt\b|\bAve\b|Trail Crossing/i.test(n)) return { kind: "road", icon: "🛣️" };
+    if (/(south end|north end)/i.test(n)) return { kind: "border", icon: "📍" };
+    return { kind: "landmark", icon: "•" };
+  }
+  // Given elevation feet per mile, return a stress descriptor.
+  // Bands chosen to match how AT hikers describe difficulty:
+  //   <100 ft/mi   = strolling (gentle ridges)
+  //   100-200      = moderate (most of NJ/PA)
+  //   200-350      = strenuous (most of GA/NC, Greylock)
+  //   350-550      = very strenuous (Whites approach, Roan)
+  //   >550         = brutal (Mahoosucs, Whites, Mount Madison)
+  function stressLevel(ftPerMi) {
+    if (!isFinite(ftPerMi) || ftPerMi <= 0) return { label: "Flat", emoji: "🪶", blurb: "negligible elevation change", color: "#7a8a55" };
+    if (ftPerMi < 100) return { label: "Easy", emoji: "😌", blurb: "gentle terrain — most hikers cover this comfortably", color: "#5b8a3a" };
+    if (ftPerMi < 200) return { label: "Moderate", emoji: "🙂", blurb: "rolling hills — average AT difficulty", color: "#7a9836" };
+    if (ftPerMi < 350) return { label: "Strenuous", emoji: "😅", blurb: "steady climbing — typical of GA/NC, Roan area", color: "#b5871f" };
+    if (ftPerMi < 550) return { label: "Very strenuous", emoji: "😰", blurb: "long climbs and steep grades — plan extra time", color: "#c46a1c" };
+    return { label: "Brutal", emoji: "🥵", blurb: "Whites/Mahoosucs territory — slow hike, low daily mileage", color: "#a23232" };
+  }
   function renderPlannedSummary() {
-    // Only count plan-but-not-yet-hiked
     const plannedSegs = [...planned]
       .filter((id) => !progress.has(id))
       .map((id) => segIndex.get(id))
@@ -787,35 +811,32 @@
 
     const totalMi = plannedSegs.reduce((a, s) => a + s.miles, 0);
     const states = [...new Set(plannedSegs.map((s) => s.state))];
-    // Elevation: use seg.elev_gain / seg.elev_loss if present in data (added at build time)
     const gain = plannedSegs.reduce((a, s) => a + (s.elev_gain || 0), 0);
     const loss = plannedSegs.reduce((a, s) => a + (s.elev_loss || 0), 0);
     const hasElev = plannedSegs.some((s) => typeof s.elev_gain === "number");
+    const ftPerMi = hasElev && totalMi > 0 ? (gain + loss) / totalMi : 0;
+    const stress = stressLevel(ftPerMi);
 
-    // Find road crossings on the plan: any segment endpoint name that looks
-    // like a road (contains "(US ", "(SR ", "Highway", "Road", or numeric ref)
-    const breakpoints = new Set();
+    // Endpoints classified by kind
+    const endpoints = new Map(); // name -> {kind, icon}
     for (const s of plannedSegs) {
-      breakpoints.add(s.from);
-      breakpoints.add(s.to);
+      if (!endpoints.has(s.from)) endpoints.set(s.from, breakpointKind(s.from));
+      if (!endpoints.has(s.to)) endpoints.set(s.to, breakpointKind(s.to));
     }
-    const roadLike = [...breakpoints].filter((n) =>
-      /\(US\s|\(SR\s|\(VA\s|\(NC\s|\(TN\s|\(NY\s|\(VT\s|\(NH\s|\(ME\s|\(CT\s|\(MA\s|\(GA\s|\(PA\s|\(MD\s|\(WV\s|\(NJ\s|Highway|Road|Parkway|Avenue|Boulevard|Drive|Pike/i.test(n)
-    );
-    const shelterLike = [...breakpoints].filter((n) =>
-      /shelter|lean.?to|cabin|hut/i.test(n) && !roadLike.includes(n)
-    );
+    const shelters = [...endpoints].filter(([, v]) => v.kind === "shelter").map(([n]) => n);
+    const roads = [...endpoints].filter(([, v]) => v.kind === "road").map(([n]) => n);
 
-    // Estimate trip days: assume a moderate 12 mi/day pace
-    const estDays = totalMi > 0 ? Math.max(1, Math.round(totalMi / 12)) : 0;
+    // Pace (mi/day) — persist user's preference across reloads.
+    const pace = Math.max(1, Math.min(50, Number(prefs.pace) || 12));
+    const estDays = totalMi > 0 ? Math.max(1, Math.round(totalMi / pace)) : 0;
 
-    // Detect contiguous runs of planned segment ids
-    const sorted = plannedSegs.map((s) => s.id).sort((a, b) => a - b);
+    // Contiguous runs of planned segments
+    const sortedIds = plannedSegs.map((s) => s.id).sort((a, b) => a - b);
     const allOrdered = [...DATA.segments].sort((a, b) => a.id - b.id);
     const idIndex = new Map(allOrdered.map((s, i) => [s.id, i]));
-    let runs = [];
+    const runs = [];
     let runStart = null, runEnd = null, runMi = 0;
-    for (const id of sorted) {
+    for (const id of sortedIds) {
       const idx = idIndex.get(id);
       const seg = segIndex.get(id);
       if (runStart === null) { runStart = idx; runEnd = idx; runMi = seg.miles; continue; }
@@ -840,29 +861,67 @@
         statsRows.push(["Elevation gain", `+${Math.round(gain).toLocaleString()} ft`]);
         statsRows.push(["Elevation loss", `−${Math.round(loss).toLocaleString()} ft`]);
         statsRows.push(["Net elevation", `${gain > loss ? "+" : ""}${Math.round(gain - loss).toLocaleString()} ft`]);
+        statsRows.push(["Climb per mile", `${Math.round(ftPerMi)} ft/mi`]);
       }
       statsRows.push(["States", states.join(", ") || "—"]);
-      statsRows.push(["Estimated trip", `${estDays} day${estDays === 1 ? "" : "s"} @ 12 mi/day`]);
+      statsRows.push(["Shelters on route", shelters.length]);
+      statsRows.push(["Road crossings on route", roads.length]);
       if (runs.length > 1) {
-        statsRows.push(["Number of distinct stretches", runs.length]);
+        statsRows.push(["Distinct stretches", runs.length]);
         statsRows.push(["Longest stretch", `${Math.max(...runs.map((r) => r.mi)).toFixed(1)} mi`]);
       }
       html.push(grid(statsRows));
 
+      // Pace + estimated trip days. Live-recomputes when user changes pace.
+      html.push(`<div class="pace-row"><label>Pace: <input type="number" id="pace-input" min="1" max="40" step="0.5" value="${pace}" /> mi/day</label>` +
+        `<span style="color:var(--muted);">→</span>` +
+        `<span id="pace-out"><strong>${estDays}</strong> day${estDays === 1 ? "" : "s"}</span></div>`);
+
+      // Stress bar (only when we have elevation)
+      if (hasElev) {
+        html.push(`<div class="stress-bar" style="border-color:${stress.color};">` +
+          `<div class="emoji">${stress.emoji}</div>` +
+          `<div><div class="label" style="color:${stress.color};">${stress.label}</div><div class="blurb">${stress.blurb}</div></div>` +
+          `<div class="num">${Math.round(ftPerMi)} ft/mi</div>` +
+          `</div>`);
+      }
+
+      // Sections — show with classification icon, mini stats, per-section difficulty
       html.push(`<h3>Sections</h3>`);
       let cumMi = 0;
       for (const s of plannedSegs) {
         cumMi += s.miles;
-        html.push(`<div class="seg-line">${escapeHtml(s.from)} → ${escapeHtml(s.to)} <small style="color:var(--muted)">(${escapeHtml(s.state)})</small><span class="mi">${s.miles.toFixed(1)} mi · ${cumMi.toFixed(1)} cum</span></div>`);
+        const fromKind = breakpointKind(s.from);
+        const toKind = breakpointKind(s.to);
+        const segGain = s.elev_gain || 0;
+        const segLoss = s.elev_loss || 0;
+        const segFtPerMi = s.miles > 0 ? (segGain + segLoss) / s.miles : 0;
+        const segStress = stressLevel(segFtPerMi);
+        const segIcons = `${fromKind.icon} → ${toKind.icon}`;
+        const elevStr = hasElev
+          ? `+${Math.round(segGain)} / −${Math.round(segLoss)} ft`
+          : "";
+        html.push(
+          `<div class="seg-line">` +
+          `<span class="seg-icons" title="${fromKind.kind} → ${toKind.kind}">${segIcons}</span>` +
+          `<span><span>${escapeHtml(s.from)}</span> → <span>${escapeHtml(s.to)}</span> <small style="color:var(--muted)">(${escapeHtml(s.state)})</small></span>` +
+          `<span class="mi">${s.miles.toFixed(1)} mi · ${cumMi.toFixed(1)} cum</span>` +
+          (hasElev ? `<span class="seg-stats">` +
+            `<span>${elevStr}</span>` +
+            `<span class="difficulty" style="color:${segStress.color};" title="${segStress.label}: ${Math.round(segFtPerMi)} ft/mi">${segStress.emoji} ${segStress.label}</span>` +
+            `</span>` : "") +
+          `</div>`
+        );
       }
 
-      if (roadLike.length > 0) {
-        html.push(`<h3>Road access points</h3>`);
-        html.push(`<div style="font-size: 12px;">${roadLike.map(escapeHtml).join(" · ")}</div>`);
+      // Endpoint chips
+      if (shelters.length > 0) {
+        html.push(`<h3>🛖 Shelters on route</h3>`);
+        html.push(`<div class="endpoints-list">${shelters.map((n) => `<span class="ep">🛖 ${escapeHtml(n)}</span>`).join("")}</div>`);
       }
-      if (shelterLike.length > 0) {
-        html.push(`<h3>Shelters along the way</h3>`);
-        html.push(`<div style="font-size: 12px;">${shelterLike.map(escapeHtml).join(" · ")}</div>`);
+      if (roads.length > 0) {
+        html.push(`<h3>🛣️ Road access points</h3>`);
+        html.push(`<div class="endpoints-list">${roads.map((n) => `<span class="ep">🛣️ ${escapeHtml(n)}</span>`).join("")}</div>`);
       }
       if (!hasElev) {
         html.push(`<h3>Note</h3>`);
@@ -872,6 +931,19 @@
     $("planned-profile-name").textContent = activeProfile;
     $("planned-body").innerHTML = html.join("");
     $("planned-modal").classList.add("show");
+
+    // Wire pace input live recompute (no full re-render — just update the days span)
+    const paceInput = $("pace-input");
+    if (paceInput) {
+      paceInput.addEventListener("input", () => {
+        const v = Math.max(1, Math.min(50, Number(paceInput.value) || 12));
+        prefs.pace = v;
+        savePrefs();
+        const newDays = totalMi > 0 ? Math.max(1, Math.round(totalMi / v)) : 0;
+        const out = $("pace-out");
+        if (out) out.innerHTML = `<strong>${newDays}</strong> day${newDays === 1 ? "" : "s"}`;
+      });
+    }
   }
   function clearAllPlanned() {
     if (planned.size === 0) return;
