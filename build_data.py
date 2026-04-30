@@ -718,9 +718,46 @@ def segment_intersect(a, b, c, d):
     return None
 
 
+_GRID_CELL = 0.02  # ~1.4 mi; tune for sparser/denser indices
+
+
+def _cells_for_bbox(min_x, max_x, min_y, max_y):
+    """Yield integer (cell_x, cell_y) keys whose square covers the bbox."""
+    cx0 = int(min_x // _GRID_CELL)
+    cx1 = int(max_x // _GRID_CELL)
+    cy0 = int(min_y // _GRID_CELL)
+    cy1 = int(max_y // _GRID_CELL)
+    for cx in range(cx0, cx1 + 1):
+        for cy in range(cy0, cy1 + 1):
+            yield cx, cy
+
+
+def _build_trail_grid(chains_data):
+    """Spatial index: cell_key -> list of (chain_idx, seg_idx) tuples.
+
+    Each AT mini-segment is registered in every cell its bbox touches.
+    Lookup is O(cells_per_query × seg_density) instead of O(num_trail_segs).
+    """
+    grid: dict = {}
+    for ci, ch in enumerate(chains_data):
+        coords = ch["coords"]
+        for i in range(len(coords) - 1):
+            ax, ay = coords[i]
+            bx, by = coords[i + 1]
+            for key in _cells_for_bbox(min(ax, bx), max(ax, bx), min(ay, by), max(ay, by)):
+                grid.setdefault(key, []).append((ci, i))
+    return grid
+
+
 def road_crossings(road_ways, chains_data):
     """For each road way, find every place where it crosses any chain of the AT.
-    Returns list of {name, ref, lat, lon, chain, along_mi}."""
+
+    Uses a spatial grid index over AT mini-segments so each road segment only
+    checks against the handful of trail segs that share its grid cells, not
+    every trail seg in the entire AT. This brings runtime from O(R × T) to
+    roughly O(R × constant) and avoids the multi-hour hang on the bbox cache.
+    """
+    grid = _build_trail_grid(chains_data)
     out = []
     for w in road_ways:
         if not w.get("geometry"):
@@ -731,7 +768,6 @@ def road_crossings(road_ways, chains_data):
         tags = w.get("tags", {}) or {}
         ref = (tags.get("ref") or "").strip()
         name = (tags.get("name") or "").strip()
-        # Build a label: prefer ref like "US-19E" / "VA-42", fall back to name.
         if ref and name and name not in ref:
             label = f"{name} ({ref})"
         elif ref:
@@ -739,39 +775,34 @@ def road_crossings(road_ways, chains_data):
         elif name:
             label = name
         else:
-            continue  # skip unnamed roads
-        # Bounding box prefilter for road
-        rmin_x = min(p[0] for p in rcoords)
-        rmax_x = max(p[0] for p in rcoords)
-        rmin_y = min(p[1] for p in rcoords)
-        rmax_y = max(p[1] for p in rcoords)
-        for ci, ch in enumerate(chains_data):
-            coords = ch["coords"]
-            cum = ch["cum_mi"]
-            for i in range(len(coords) - 1):
-                a = coords[i]
-                b = coords[i + 1]
-                # Bounding box prefilter for AT segment
-                ax, ay = a
-                bx, by = b
-                seg_min_x = min(ax, bx)
-                seg_max_x = max(ax, bx)
-                seg_min_y = min(ay, by)
-                seg_max_y = max(ay, by)
-                if seg_max_x < rmin_x or seg_min_x > rmax_x:
+            continue
+        for j in range(len(rcoords) - 1):
+            c = rcoords[j]
+            d = rcoords[j + 1]
+            cx, cy = c
+            dx, dy = d
+            # Find AT mini-segs in any cell this road sub-segment touches.
+            # A small set keeps duplicates (when a road bbox spans multiple
+            # cells that all index the same AT seg) from being tested twice.
+            seen = set()
+            for key in _cells_for_bbox(min(cx, dx), max(cx, dx), min(cy, dy), max(cy, dy)):
+                bucket = grid.get(key)
+                if not bucket:
                     continue
-                if seg_max_y < rmin_y or seg_min_y > rmax_y:
-                    continue
-                for j in range(len(rcoords) - 1):
-                    c = rcoords[j]
-                    d = rcoords[j + 1]
+                for ref_pair in bucket:
+                    if ref_pair in seen:
+                        continue
+                    seen.add(ref_pair)
+                    ci, i = ref_pair
+                    ch = chains_data[ci]
+                    coords = ch["coords"]
+                    cum = ch["cum_mi"]
+                    a = coords[i]
+                    b = coords[i + 1]
                     ix = segment_intersect(a, b, c, d)
                     if ix:
                         seg_len_km = hav_km(a, b)
-                        if seg_len_km > 0:
-                            partial = hav_km(a, ix) / seg_len_km
-                        else:
-                            partial = 0
+                        partial = hav_km(a, ix) / seg_len_km if seg_len_km > 0 else 0
                         partial_mi = (cum[i + 1] - cum[i]) * partial
                         along = cum[i] + partial_mi
                         out.append({
@@ -781,8 +812,7 @@ def road_crossings(road_ways, chains_data):
                             "chain": ci,
                             "along_mi": along,
                         })
-    # Dedupe: a single road may cross the AT multiple times very close together
-    # (parallel lanes, divided highways). Collapse those within 0.05 mi.
+    # Dedupe near-duplicates (parallel lanes, divided highways).
     out.sort(key=lambda r: (r["chain"], r["along_mi"]))
     deduped = []
     for r in out:
@@ -795,6 +825,39 @@ def road_crossings(road_ways, chains_data):
             continue
         deduped.append(r)
     return deduped
+
+
+def _filter_roads_to_trail_corridor(road_ways, chains_data):
+    """Drop road ways whose bbox doesn't intersect any trail cell.
+
+    The Overpass bbox query returns every road in the AT envelope, which is
+    a wide rectangle (e.g. all of Eastern PA). The actual trail occupies a
+    thin corridor through that rectangle. Cheaply rejecting roads that
+    don't touch a trail-cell collapses the input by ~95% before the heavy
+    intersection loop runs, and frees the underlying memory immediately.
+    """
+    trail_cells = set()
+    for ch in chains_data:
+        coords = ch["coords"]
+        for i in range(len(coords) - 1):
+            ax, ay = coords[i]
+            bx, by = coords[i + 1]
+            for key in _cells_for_bbox(min(ax, bx), max(ax, bx), min(ay, by), max(ay, by)):
+                trail_cells.add(key)
+    kept = []
+    for w in road_ways:
+        geom = w.get("geometry")
+        if not geom or len(geom) < 2:
+            continue
+        rmin_x = min(g["lon"] for g in geom)
+        rmax_x = max(g["lon"] for g in geom)
+        rmin_y = min(g["lat"] for g in geom)
+        rmax_y = max(g["lat"] for g in geom)
+        for key in _cells_for_bbox(rmin_x, rmax_x, rmin_y, rmax_y):
+            if key in trail_cells:
+                kept.append(w)
+                break
+    return kept
 
 
 def main_nps():
@@ -886,10 +949,12 @@ def main_nps():
             roads_data = {"elements": []}
     road_ways = [e for e in roads_data.get("elements", []) if e.get("type") == "way" and e.get("geometry")]
     print(f"  candidate road ways: {len(road_ways)}")
-    crossings = road_crossings(
-        road_ways,
-        [{"coords": master_coords, "cum_mi": cum_mi}],
-    )
+    chains_for_grid = [{"coords": master_coords, "cum_mi": cum_mi}]
+    # Free the bulk Overpass response now that we've extracted the ways list.
+    roads_data = None
+    road_ways = _filter_roads_to_trail_corridor(road_ways, chains_for_grid)
+    print(f"  road ways inside trail corridor: {len(road_ways)}")
+    crossings = road_crossings(road_ways, chains_for_grid)
     crossings.sort(key=lambda c: c["along_mi"])
     # Dedupe by label+mile
     cross_dedup = []
