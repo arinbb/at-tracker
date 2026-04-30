@@ -1238,6 +1238,101 @@
     };
   }
   // Render a small color-graded bar with a numeric label, e.g. "7.2/10".
+  // Walk the planned route mile by mile, distributing each segment's
+  // climb-per-mile across the buckets it overlaps. Returns an array of
+  // {startMi, widthMi, ftPerMi} objects, one per bucket.
+  function bucketizeDifficulty(plannedSegs, bucketMi) {
+    const totalMi = plannedSegs.reduce((a, s) => a + s.miles, 0);
+    if (totalMi <= 0) return [];
+    const n = Math.max(1, Math.ceil(totalMi / bucketMi));
+    const buckets = Array.from({ length: n }, () => ({ mi: 0, ft: 0 }));
+    let cum = 0;
+    for (const s of plannedSegs) {
+      const segStart = cum;
+      const segEnd = cum + s.miles;
+      const totalFt = (s.elev_gain || 0) + (s.elev_loss || 0);
+      const ftPerMi = s.miles > 0 ? totalFt / s.miles : 0;
+      const startBi = Math.floor(segStart / bucketMi);
+      const endBi = Math.min(n - 1, Math.max(startBi, Math.floor((segEnd - 1e-6) / bucketMi)));
+      for (let bi = startBi; bi <= endBi; bi++) {
+        const ba = bi * bucketMi;
+        const bb = ba + bucketMi;
+        const overlap = Math.max(0, Math.min(bb, segEnd) - Math.max(ba, segStart));
+        buckets[bi].mi += overlap;
+        buckets[bi].ft += ftPerMi * overlap;
+      }
+      cum = segEnd;
+    }
+    return buckets.map((b, i) => ({
+      startMi: i * bucketMi,
+      widthMi: b.mi,
+      ftPerMi: b.mi > 0 ? b.ft / b.mi : 0,
+    }));
+  }
+  // SVG bar chart of per-mile difficulty for a planned trip. One bar per
+  // mile (or 2/5/10-mile bucket for longer trips). Bar height = ft/mi,
+  // bar color = difficulty grade gradient, hover tooltip shows the range.
+  function renderDifficultyChart(plannedSegs) {
+    const totalMi = plannedSegs.reduce((a, s) => a + s.miles, 0);
+    if (totalMi <= 0) return "";
+    // Adaptive bucket so we always fit ~30-100 bars
+    let bucketMi = 1;
+    if (totalMi > 50) bucketMi = 2;
+    if (totalMi > 200) bucketMi = 5;
+    if (totalMi > 600) bucketMi = 10;
+    const buckets = bucketizeDifficulty(plannedSegs, bucketMi);
+    if (buckets.length === 0) return "";
+    const peakFt = Math.max(0, ...buckets.map((b) => b.ftPerMi));
+    // Cap y-axis at sensible AT scales: 800 default, more if trip has >800
+    const yMax = Math.max(800, peakFt * 1.1);
+
+    const W = 560;
+    const H = 130;
+    const padL = 36;
+    const padR = 8;
+    const padT = 10;
+    const padB = 24;
+    const innerW = W - padL - padR;
+    const innerH = H - padT - padB;
+    const barW = innerW / buckets.length;
+    const bars = buckets.map((b, i) => {
+      const x = padL + i * barW;
+      const h = (b.ftPerMi / yMax) * innerH;
+      const y = padT + innerH - h;
+      const grade = difficultyGrade(b.ftPerMi);
+      const color = difficultyColor(grade);
+      const lo = b.startMi.toFixed(0);
+      const hi = (b.startMi + bucketMi).toFixed(0);
+      return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${Math.max(0.5, barW - 0.4).toFixed(2)}" height="${Math.max(0, h).toFixed(2)}" fill="${color}"><title>Mile ${lo}–${hi}: ${Math.round(b.ftPerMi)} ft/mi (grade ${grade.toFixed(1)} ${difficultyLabel(grade)})</title></rect>`;
+    }).join("");
+    // Y-axis grid lines + labels
+    const yMarks = [];
+    for (const v of [200, 400, 600, 800, 1000].filter((v) => v <= yMax)) {
+      const y = padT + innerH - (v / yMax) * innerH;
+      yMarks.push(`<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="var(--rule)" stroke-width="0.5" stroke-dasharray="2,2"/>`);
+      yMarks.push(`<text x="${padL - 4}" y="${y + 3}" text-anchor="end" font-size="9" fill="var(--muted)">${v}</text>`);
+    }
+    // X-axis labels: start, 25/50/75%, end
+    const xLabels = [];
+    const xPoints = totalMi <= 8 ? [0, totalMi] : [0, totalMi * 0.25, totalMi * 0.5, totalMi * 0.75, totalMi];
+    for (const mi of xPoints) {
+      const x = padL + (mi / totalMi) * innerW;
+      xLabels.push(`<text x="${x.toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="9" fill="var(--muted)">${mi.toFixed(0)}</text>`);
+    }
+    xLabels.push(`<text x="${(W - padR - 4).toFixed(1)}" y="${(H - 1).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--muted)">mi</text>`);
+    // Y-axis title
+    const yTitle = `<text x="4" y="${(padT + 6).toFixed(1)}" font-size="9" fill="var(--muted)">ft/mi</text>`;
+    return (
+      `<div class="diff-chart-wrap"><svg class="diff-chart" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">` +
+      yMarks.join("") +
+      bars +
+      xLabels.join("") +
+      yTitle +
+      `</svg>` +
+      `<div class="diff-chart-cap">Each bar = ${bucketMi} mi · hover for details</div>` +
+      `</div>`
+    );
+  }
   function difficultyBadgeHTML(ftPerMi, opts) {
     const o = opts || {};
     const stress = stressLevel(ftPerMi);
@@ -1401,6 +1496,12 @@
             `<div class="track"><div class="fill" style="width:${widthPct}%;background:${stress.color};"></div></div></div>` +
           `<div class="num">${Math.round(ftPerMi)} ft/mi</div>` +
           `</div>`);
+      }
+
+      // Per-mile difficulty bar chart
+      if (hasElev) {
+        html.push(`<h3>📊 Difficulty by mile</h3>`);
+        html.push(renderDifficultyChart(plannedSegs));
       }
 
       // Sections — compact one-line-per-segment listing

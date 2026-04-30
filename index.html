@@ -722,6 +722,22 @@
     background: var(--input-bg);
     color: var(--ink);
   }
+  /* Per-mile difficulty bar chart */
+  #planned-body .diff-chart-wrap { margin: 4px 0 8px; }
+  #planned-body .diff-chart {
+    width: 100%;
+    height: auto;
+    display: block;
+    background: var(--input-bg-alt);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+  }
+  #planned-body .diff-chart-cap {
+    text-align: right;
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
   /* Difficulty bar in the modal (large) */
   #planned-body .diff-bar-row {
     margin: 12px 0 4px 0;
@@ -821,6 +837,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=23"></script>
+<script src="app.js?v=24"></script>
 </body>
 </html>
