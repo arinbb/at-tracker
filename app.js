@@ -68,6 +68,8 @@
   let openChunks = new Set(); // "state::chunk-i" keys for expanded sub-groups
   let multiSelectMode = false; // mobile-friendly bulk-select toggle
   let multiSelectAnchor = null; // first segId tapped while in multi-select mode
+  let addTripMode = false; // "+ Trip" mode: pick start, then end, then date
+  let addTripStart = null; // first segId picked in add-trip mode
   let notesSaveTimer = null; // debounced notes flush
   let cloudUser = null; // Firebase User when signed in
   let cloudSaveTimer = null; // debounced cloud write
@@ -153,6 +155,107 @@
     return out;
   }
 
+  // -------- v2 -> v3 user data migration --------
+  // Reads the previous-version data file (at_data_v2.json) and remaps every
+  // user-tracked segment ID (across all profiles) to the new schema by
+  // matching on segment-midpoint lat/lon proximity. Idempotent: marker key
+  // 'at-tracker-migrated-v3' prevents repeats.
+  async function migrateV2ToV3() {
+    let v2;
+    try {
+      const r = await fetch("at_data_v2.json", { cache: "no-cache" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      v2 = await r.json();
+    } catch (e) {
+      console.warn("can't load at_data_v2.json — skipping migration:", e);
+      return;
+    }
+    const v2Segs = v2.segments || [];
+    if (v2Segs.length === 0) return;
+    // Build v3 spatial index: for each v3 segment, midpoint lat/lon
+    const v3Index = DATA.segments.map((s) => {
+      const c = s.geom;
+      const m = c[Math.floor(c.length / 2)];
+      return { id: s.id, lon: m[0], lat: m[1] };
+    });
+    function nearestV3SegmentId(midLon, midLat) {
+      let best = null;
+      let bestKm = Infinity;
+      for (const m of v3Index) {
+        const lat0 = (m.lat + midLat) * 0.5 * Math.PI / 180;
+        const dx = (m.lon - midLon) * 111.32 * Math.cos(lat0);
+        const dy = (m.lat - midLat) * 110.574;
+        const km = Math.sqrt(dx * dx + dy * dy);
+        if (km < bestKm) { bestKm = km; best = m; }
+      }
+      return best ? { id: best.id, km: bestKm } : null;
+    }
+    // Build the remap once
+    const remap = new Map(); // oldId -> newId
+    for (const s of v2Segs) {
+      if (!s.geom || s.geom.length < 2) continue;
+      const m = s.geom[Math.floor(s.geom.length / 2)];
+      const match = nearestV3SegmentId(m[0], m[1]);
+      if (match && match.km < 1.5) remap.set(s.id, match.id);
+    }
+    if (remap.size === 0) return;
+    console.warn(`Migrating ${remap.size} v2 -> v3 segment ID mappings...`);
+
+    // Apply to each per-profile localStorage record
+    const profilesList = loadProfileList();
+    for (const profileName of profilesList) {
+      // progress
+      const prog = safeGet(progressKey(profileName));
+      if (prog) {
+        try {
+          const obj = JSON.parse(prog);
+          const newObj = {};
+          for (const [k, v] of Object.entries(obj)) {
+            const newId = remap.get(Number(k));
+            if (newId != null) newObj[newId] = v;
+          }
+          safeSet(progressKey(profileName), JSON.stringify(newObj));
+        } catch (e) {}
+      }
+      // planned
+      const pl = safeGet(plannedKey(profileName));
+      if (pl) {
+        try {
+          const arr = JSON.parse(pl).map(Number).map((id) => remap.get(id)).filter((id) => id != null);
+          safeSet(plannedKey(profileName), JSON.stringify(arr));
+        } catch (e) {}
+      }
+      // notes
+      const nt = safeGet(notesKey(profileName));
+      if (nt) {
+        try {
+          const obj = JSON.parse(nt);
+          const newObj = {};
+          for (const [k, v] of Object.entries(obj)) {
+            const newId = remap.get(Number(k));
+            if (newId != null) newObj[newId] = v;
+          }
+          safeSet(notesKey(profileName), JSON.stringify(newObj));
+        } catch (e) {}
+      }
+      // trips (each has segs: [oldIds]) and pins are by name so they survive
+      const tr = safeGet(tripsKey(profileName));
+      if (tr) {
+        try {
+          const obj = JSON.parse(tr);
+          if (Array.isArray(obj.trips)) {
+            for (const t of obj.trips) {
+              if (Array.isArray(t.segs)) {
+                t.segs = t.segs.map(Number).map((id) => remap.get(id)).filter((id) => id != null);
+              }
+            }
+          }
+          safeSet(tripsKey(profileName), JSON.stringify(obj));
+        } catch (e) {}
+      }
+    }
+  }
+
   // -------- Profiles --------
   function loadProfileList() {
     const raw = safeGet(LS_PROFILES);
@@ -180,6 +283,17 @@
     profileSelectEl.innerHTML = profiles.map(p =>
       `<option value="${escapeHtml(p)}"${p === activeProfile ? " selected" : ""}>${escapeHtml(p)}</option>`
     ).join("");
+    updateIdentityLabel();
+  }
+  // Keep the avatar pill (top-right) in sync with the active profile.
+  function updateIdentityLabel() {
+    const labelEl = $("identity-label");
+    const avatarEl = $("identity-avatar");
+    if (labelEl) labelEl.textContent = activeProfile;
+    if (avatarEl) {
+      const init = (activeProfile || "?").trim().charAt(0).toUpperCase() || "?";
+      avatarEl.textContent = init;
+    }
   }
   function switchProfile(name) {
     if (!profiles.includes(name)) return;
@@ -634,6 +748,10 @@
     { kind: "peak",       emoji: "🏔",  label: "Peaks",       defaultOn: true  },
     { kind: "view",       emoji: "🌄",  label: "Viewpoints",  defaultOn: true  },
     { kind: "town",       emoji: "🏘️", label: "Towns",       defaultOn: true  },
+    { kind: "parking",    emoji: "🅿️", label: "Trailhead parking", defaultOn: false },
+    { kind: "campsite",   emoji: "⛺",  label: "Campsites",   defaultOn: false },
+    { kind: "bridge",     emoji: "🌉",  label: "Bridges",     defaultOn: false },
+    { kind: "privy",      emoji: "🚻",  label: "Privies",     defaultOn: false },
     { kind: "maildrop",   emoji: "📮",  label: "Maildrops",   defaultOn: false },
     { kind: "resupply",   emoji: "🏪",  label: "Resupply",    defaultOn: true  },
     { kind: "outfitter",  emoji: "🥾",  label: "Outfitters",  defaultOn: false },
@@ -1023,6 +1141,9 @@
       html.push(stateFlagsHTML(st.name));
       html.push(`<span>${escapeHtml(st.name)}</span>`);
       html.push(`<span class="state-stats"><span class="done">${hikedCount}</span>/${segs.length} · ${hikedMi.toFixed(1)}/${totalStateMi.toFixed(1)} mi</span>`);
+      html.push(`<span class="state-actions">`);
+      html.push(`<button class="state-bulk-btn" data-bulk-state="${escapeHtml(st.name)}" title="Mark all sections in ${escapeHtml(st.name)} as hiked" aria-label="Mark all in state hiked">✓ all</button>`);
+      html.push(`</span>`);
       html.push(`</header>`);
       html.push(`<div class="state-body">`);
       if (useChunks) {
@@ -1665,6 +1786,10 @@
         { kind: "peak", emoji: "🏔", label: "Notable peaks" },
         { kind: "view", emoji: "🌄", label: "Viewpoints" },
         { kind: "town", emoji: "🏘️", label: "Towns" },
+        { kind: "parking", emoji: "🅿️", label: "Trailhead parking" },
+        { kind: "campsite", emoji: "⛺", label: "Campsites" },
+        { kind: "bridge", emoji: "🌉", label: "Bridges" },
+        { kind: "privy", emoji: "🚻", label: "Privies" },
         { kind: "maildrop", emoji: "📮", label: "Post offices / maildrops" },
         { kind: "resupply", emoji: "🏪", label: "Resupply (grocery / store)" },
         { kind: "outfitter", emoji: "🥾", label: "Outfitters" },
@@ -2141,7 +2266,7 @@
       || (prefs.theme === null && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
     document.body.classList.toggle("theme-dark", wantDark);
     const btn = $("theme-btn");
-    if (btn) btn.textContent = wantDark ? "☼" : "☾";
+    if (btn) btn.textContent = wantDark ? "☼ Toggle theme" : "☾ Toggle theme";
   }
   function toggleTheme() {
     const isDark = document.body.classList.contains("theme-dark");
@@ -2231,6 +2356,23 @@
       }
       return;
     }
+    // Bulk-mark: stop propagation so the click doesn't also collapse the state.
+    const bulkBtn = e.target.closest("[data-bulk-state]");
+    if (bulkBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const stateName = bulkBtn.dataset.bulkState;
+      const segs = DATA.segments.filter(
+        (s) => effectiveStateName(s) === stateName && !progress.has(s.id)
+      );
+      if (segs.length === 0) {
+        alert(`All sections in ${stateName} are already marked hiked.`);
+        return;
+      }
+      const ids = segs.map((s) => s.id);
+      openBulkDate(ids, true);
+      return;
+    }
     const chunkHeader = e.target.closest(".chunk-header");
     if (chunkHeader) {
       const chunkEl = chunkHeader.parentElement;
@@ -2248,6 +2390,21 @@
       if (stateEl.classList.contains("collapsed")) openStates.delete(stateName);
       else openStates.add(stateName);
       return;
+    }
+    // Add-trip mode: any click on a segment row (checkbox, name, blank space)
+    // is interpreted as a trip start/end pick. Do NOT toggle the checkbox.
+    if (addTripMode) {
+      const segRow = e.target.closest(".seg[data-seg]");
+      if (segRow) {
+        e.preventDefault();
+        e.stopPropagation();
+        // Roll back any visual checkbox flip the click may have caused.
+        const cb = segRow.querySelector('[data-toggle]');
+        if (cb) cb.checked = progress.has(Number(cb.dataset.toggle));
+        const id = Number(segRow.dataset.seg);
+        handleAddTripPick(id);
+        return;
+      }
     }
     const cb = e.target.closest("[data-toggle]");
     if (cb) {
@@ -2354,16 +2511,94 @@
   function toggleMultiSelect() {
     multiSelectMode = !multiSelectMode;
     multiSelectAnchor = null;
+    // Multi-select and add-trip are mutually exclusive.
+    if (multiSelectMode && addTripMode) exitAddTripMode();
     document.body.classList.toggle("multi-select", multiSelectMode);
     document.querySelectorAll(".seg[data-anchor]").forEach((el) => el.removeAttribute("data-anchor"));
     const btn = $("multi-select-btn");
     if (btn) btn.setAttribute("aria-pressed", String(multiSelectMode));
   }
+  // ----- Add-trip: pick start segment, then end, then a date.
+  // Reuses the bulk-date modal to apply the same date to every segment in
+  // the contiguous range. Exit cleanly via Esc, the banner button, or by
+  // toggling multi-select.
+  function toggleAddTripMode() {
+    if (addTripMode) {
+      exitAddTripMode();
+      return;
+    }
+    addTripMode = true;
+    addTripStart = null;
+    if (multiSelectMode) toggleMultiSelect();
+    document.body.classList.add("add-trip");
+    document.querySelectorAll(".seg[data-trip-anchor]").forEach((el) => el.removeAttribute("data-trip-anchor"));
+    renderAddTripBanner();
+    const btn = $("add-trip-btn");
+    if (btn) btn.setAttribute("aria-pressed", "true");
+  }
+  function exitAddTripMode() {
+    addTripMode = false;
+    addTripStart = null;
+    document.body.classList.remove("add-trip");
+    document.querySelectorAll(".seg[data-trip-anchor]").forEach((el) => el.removeAttribute("data-trip-anchor"));
+    const banner = $("add-trip-banner");
+    if (banner) banner.style.display = "none";
+    const btn = $("add-trip-btn");
+    if (btn) btn.setAttribute("aria-pressed", "false");
+  }
+  function renderAddTripBanner() {
+    const banner = $("add-trip-banner");
+    if (!banner) return;
+    if (!addTripMode) {
+      banner.style.display = "none";
+      return;
+    }
+    banner.style.display = "";
+    if (!addTripStart) {
+      banner.innerHTML =
+        `<strong>Add a trip:</strong> tap the <em>first</em> segment of your trip on the list. ` +
+        `<button id="add-trip-cancel" type="button">Cancel</button>`;
+    } else {
+      const seg = segIndex.get(addTripStart);
+      const startLabel = seg ? `${seg.from} → ${seg.to}` : "(unknown)";
+      banner.innerHTML =
+        `<strong>Start:</strong> ${escapeHtml(startLabel)}. Now tap the <em>last</em> segment. ` +
+        `<button id="add-trip-cancel" type="button">Cancel</button>`;
+    }
+  }
+  // Called from the segment-row click branch when add-trip mode is active.
+  function handleAddTripPick(segId) {
+    if (!addTripStart) {
+      addTripStart = segId;
+      document.querySelectorAll(".seg[data-trip-anchor]").forEach((el) => el.removeAttribute("data-trip-anchor"));
+      const row = document.querySelector(`.seg[data-seg="${segId}"]`);
+      if (row) row.setAttribute("data-trip-anchor", "true");
+      renderAddTripBanner();
+      return;
+    }
+    if (segId === addTripStart) {
+      // Same row twice: just deselect, let user pick again.
+      addTripStart = null;
+      document.querySelectorAll(".seg[data-trip-anchor]").forEach((el) => el.removeAttribute("data-trip-anchor"));
+      renderAddTripBanner();
+      return;
+    }
+    const ids = rangeIds(addTripStart, segId);
+    if (ids.length === 0) {
+      exitAddTripMode();
+      return;
+    }
+    exitAddTripMode();
+    openBulkDate(ids, true);
+  }
   function toggleLegend() {
     const el = $("map-legend");
     if (!el) return;
     el.classList.toggle("collapsed");
-    try { localStorage.setItem("at-tracker-legend-collapsed", el.classList.contains("collapsed") ? "1" : ""); } catch (e) {}
+    try {
+      // "0" = explicitly expanded, "1" = collapsed. Default (no value) = collapsed.
+      localStorage.setItem("at-tracker-legend-collapsed", el.classList.contains("collapsed") ? "1" : "0");
+    } catch (e) {}
   }
   function onSidebarInput(e) {
     const noteInput = e.target.closest("[data-note]");
@@ -3071,6 +3306,20 @@
     DATA.segments.forEach((s) => segIndex.set(s.id, s));
     computeCumulative();
 
+    // ---- v2 -> v3 user data migration (one-time, idempotent) ----
+    // If the bundled data is v3+ and the user's localStorage still has
+    // segment IDs from v2, look up each old segment's midpoint in v2 data
+    // and remap to the closest v3 segment. Saves a lot of grief over losing
+    // your hiked / planned / notes when we change the trail data.
+    try {
+      if ((data.version || 1) >= 3 && !safeGet("at-tracker-migrated-v3")) {
+        await migrateV2ToV3();
+        safeSet("at-tracker-migrated-v3", "1");
+      }
+    } catch (e) {
+      console.warn("v3 migration failed:", e);
+    }
+
     // Load wikitrail features (resupply, maildrop, hostel, hotel, restaurant, etc.)
     // Optional — app keeps working if file is missing.
     try {
@@ -3174,10 +3423,23 @@
     filterHikedEl.addEventListener("change", () => renderSections());
     if (filterPlannedEl) filterPlannedEl.addEventListener("change", () => renderSections());
     $("multi-select-btn")?.addEventListener("click", toggleMultiSelect);
+    $("add-trip-btn")?.addEventListener("click", toggleAddTripMode);
+    // Banner is rendered dynamically; delegate cancel + Esc.
+    document.addEventListener("click", (e) => {
+      if (e.target.id === "add-trip-cancel") {
+        e.preventDefault();
+        exitAddTripMode();
+      }
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && addTripMode) exitAddTripMode();
+    });
     $("legend-toggle")?.addEventListener("click", toggleLegend);
-    // Restore collapsed legend state from localStorage
+    // Default: legend collapsed. Only stay expanded if user explicitly
+    // opened it (stored value === "0"). This keeps the map clean on first
+    // visit and respects the user's preference once set.
     try {
-      if (localStorage.getItem("at-tracker-legend-collapsed") === "1") {
+      if (localStorage.getItem("at-tracker-legend-collapsed") !== "0") {
         $("map-legend")?.classList.add("collapsed");
       }
     } catch (e) {}
@@ -3190,6 +3452,66 @@
     $("profile-add").addEventListener("click", onAddProfile);
     $("profile-rename").addEventListener("click", onRenameProfile);
     $("profile-delete").addEventListener("click", onDeleteProfile);
+
+    // ----- Identity dropdown + overflow menus (top toolbar, modal footers).
+    // Single delegated listener so we don't have to wire every menu by ID.
+    const closeAllMenus = () => {
+      document.querySelectorAll(".overflow-menu.open").forEach((m) => {
+        m.classList.remove("open");
+        const t = m.querySelector(".overflow-trigger");
+        if (t) t.setAttribute("aria-expanded", "false");
+      });
+      const ident = $("identity-control");
+      if (ident && ident.classList.contains("open")) {
+        ident.classList.remove("open");
+        $("identity-trigger")?.setAttribute("aria-expanded", "false");
+      }
+    };
+    document.addEventListener("click", (e) => {
+      // Identity trigger toggles the avatar panel.
+      const identTrigger = e.target.closest("#identity-trigger");
+      if (identTrigger) {
+        e.stopPropagation();
+        const ident = $("identity-control");
+        const wasOpen = ident.classList.contains("open");
+        closeAllMenus();
+        if (!wasOpen) {
+          ident.classList.add("open");
+          identTrigger.setAttribute("aria-expanded", "true");
+        }
+        return;
+      }
+      // Overflow menu trigger toggles its own panel.
+      const trigger = e.target.closest(".overflow-trigger");
+      if (trigger) {
+        const menu = trigger.closest(".overflow-menu");
+        if (!menu) return;
+        e.stopPropagation();
+        const wasOpen = menu.classList.contains("open");
+        closeAllMenus();
+        if (!wasOpen) {
+          menu.classList.add("open");
+          trigger.setAttribute("aria-expanded", "true");
+        }
+        return;
+      }
+      // Click on a menu item — close after the action runs.
+      const inMenuItem = e.target.closest(".overflow-list button");
+      if (inMenuItem) {
+        // Defer close until the click handler has executed and (likely)
+        // opened a modal; otherwise the modal sees a stray outside-click.
+        setTimeout(closeAllMenus, 0);
+        return;
+      }
+      // Click anywhere else closes any open menu/panel — but not when the
+      // click is inside the still-open identity panel (form interactions).
+      if (e.target.closest("#identity-panel")) return;
+      if (e.target.closest(".overflow-list")) return;
+      closeAllMenus();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeAllMenus();
+    });
 
     $("share-btn").addEventListener("click", openShare);
     $("share-close").addEventListener("click", () => $("share-modal").classList.remove("show"));

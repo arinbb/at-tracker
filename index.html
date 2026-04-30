@@ -161,6 +161,33 @@
   .state.collapsed .state-body { display: none; }
   .state-header .state-stats { margin-left: auto; font-size: 12px; color: var(--muted); font-weight: 500; }
   .state-header .state-stats .done { color: var(--hike); font-weight: 600; }
+  /* State header secondary actions — fade in on hover/focus to reduce
+     visual noise. They stay reachable via keyboard focus. */
+  .state-header .state-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    opacity: 0.25;
+    transition: opacity .15s ease;
+  }
+  .state-header:hover .state-actions,
+  .state-header:focus-within .state-actions { opacity: 1; }
+  .state-bulk-btn,
+  .state-trip-btn {
+    font-size: 11px;
+    padding: 2px 8px;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    background: var(--panel);
+    cursor: pointer;
+    color: var(--ink);
+    line-height: 1.4;
+    white-space: nowrap;
+  }
+  .state-bulk-btn:hover, .state-trip-btn:hover {
+    background: var(--hike-bg); border-color: var(--hike); color: var(--hike);
+  }
+  .state-trip-btn:hover { background: var(--plan-bg); border-color: var(--plan); color: var(--plan); }
 
   .seg {
     padding: 8px 12px 8px 32px;
@@ -181,7 +208,17 @@
   .seg .name { line-height: 1.3; }
   .seg .name .arrow { color: var(--muted); margin: 0 4px; }
   .seg .miles { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; padding-top: 2px; text-align: right; display: flex; align-items: flex-start; gap: 6px; justify-content: flex-end; }
-  .seg .miles .miles-text { display: flex; flex-direction: column; align-items: flex-end; }
+  .seg .miles .miles-text {
+    display: flex; flex-direction: column; align-items: flex-end;
+    opacity: 0; transition: opacity .12s ease;
+    pointer-events: none;
+  }
+  /* Reveal stats on row hover/focus, and always show on hiked/planned rows
+     since those are the rows users explicitly drilled into. */
+  .seg:hover .miles .miles-text,
+  .seg:focus-within .miles .miles-text,
+  .seg.hiked .miles .miles-text,
+  .seg.planned .miles .miles-text { opacity: 1; pointer-events: auto; }
   .seg .zoom-btn {
     border: none;
     background: transparent;
@@ -362,6 +399,17 @@
   .map-legend .row { display: flex; align-items: center; gap: 6px; }
   .map-legend .swatch { width: 18px; height: 4px; border-radius: 2px; flex-shrink: 0; }
   .map-legend .swatch.shelter { width: 8px; height: 8px; border-radius: 50%; background: #e8a849; border: 1px solid #3a2d20; }
+  .map-legend .legend-divider {
+    margin: 6px 0 3px 0;
+    padding-top: 4px;
+    border-top: 1px solid var(--rule);
+    font-size: 9px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .map-legend .legend-feat { line-height: 1.45; }
+  .map-legend .legend-feat span:first-child { width: 18px; display: inline-block; text-align: center; font-size: 13px; }
   .map-legend.collapsed .legend-rows { display: none; }
   .map-legend .legend-toggle {
     border: none;
@@ -406,11 +454,51 @@
   #sync-status.synced { color: var(--hike); }
   #sync-status.error { color: var(--accent); }
 
-  /* Multi-select active state */
+  /* Multi-select active state — only the active anchor gets a strong
+     visual marker; un-anchored rows look normal so users don't read the
+     whole list as "already selected". */
   body.multi-select #multi-select-btn { background: var(--accent); color: white; border-color: var(--accent); }
-  body.multi-select .seg [data-toggle] { outline: 2px dashed var(--accent); outline-offset: 2px; }
-  body.multi-select .seg[data-anchor=true] { background: rgba(139, 58, 47, 0.12); }
-  body.multi-select .seg[data-anchor=true] [data-toggle] { outline-color: var(--accent); }
+  body.multi-select .seg[data-anchor=true] { background: rgba(139, 58, 47, 0.18); outline: 2px solid var(--accent); outline-offset: -2px; }
+  body.multi-select .seg[data-anchor=true]::before {
+    content: "Range start — tap the last section of your range to mark all between";
+    display: block;
+    font-size: 11px;
+    color: var(--accent);
+    grid-column: 1 / -1;
+    margin-bottom: 4px;
+    font-weight: 600;
+  }
+
+  /* Add-trip mode: similar pattern, but with the planning/blue accent
+     and a subtle highlight on every row to suggest "tap any of these". */
+  body.add-trip #add-trip-btn { background: var(--plan); color: white; border-color: var(--plan); }
+  body.add-trip .seg { cursor: crosshair; }
+  body.add-trip .seg:hover { background: rgba(26, 95, 180, 0.10); }
+  body.add-trip .seg[data-trip-anchor=true] {
+    background: rgba(26, 95, 180, 0.20);
+    outline: 2px solid var(--plan);
+    outline-offset: -2px;
+  }
+  body.add-trip .seg[data-trip-anchor=true]::before {
+    content: "Trip start — now tap the last segment of your trip";
+    display: block;
+    font-size: 11px;
+    color: var(--plan);
+    grid-column: 1 / -1;
+    margin-bottom: 4px;
+    font-weight: 600;
+  }
+  #add-trip-banner button {
+    margin-left: 8px;
+    font-size: 11px;
+    padding: 3px 8px;
+    border: 1px solid var(--plan);
+    background: white;
+    color: var(--plan);
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  #add-trip-banner button:hover { background: var(--plan); color: white; }
 
   /* Sub-chunk groups inside long states */
   .chunk { border-top: 1px solid var(--rule); }
@@ -430,6 +518,130 @@
   .chunk.collapsed .caret { transform: rotate(-90deg); }
   .chunk.collapsed .chunk-body { display: none; }
   .chunk-header .chunk-stats { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+  /* Generic overflow / dropdown menu — used by modal footers, the top
+     toolbar's "More" cluster, and the identity panel. Click trigger to
+     toggle; click outside (or any item) to close. */
+  .overflow-menu { position: relative; display: inline-block; }
+  .overflow-trigger {
+    font: inherit;
+    padding: 6px 12px;
+    border: 1px solid var(--rule);
+    background: var(--panel);
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--ink);
+  }
+  .overflow-trigger:hover { background: var(--hover); }
+  .overflow-list {
+    display: none;
+    position: absolute;
+    top: 100%;
+    right: 0;
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.15);
+    z-index: 1100;
+    min-width: 180px;
+    margin-top: 4px;
+    padding: 4px;
+  }
+  .overflow-menu.open .overflow-list { display: block; }
+  .overflow-list button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: none;
+    background: transparent;
+    padding: 7px 12px;
+    border-radius: 4px;
+    font: inherit;
+    color: var(--ink);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .overflow-list button:hover { background: var(--hover); }
+  .overflow-list .menu-divider {
+    height: 1px;
+    background: var(--rule);
+    margin: 4px 0;
+  }
+  .overflow-list .menu-label {
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 6px 12px 2px;
+  }
+
+  /* Identity (profile + auth) consolidated into a single avatar dropdown. */
+  .identity-control { position: relative; }
+  .identity-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px 4px 6px;
+    background: var(--panel-alt);
+    border: 1px solid var(--rule);
+    border-radius: 999px;
+    cursor: pointer;
+    font: inherit;
+    color: var(--ink);
+    font-size: 13px;
+  }
+  .identity-trigger:hover { background: var(--hover); }
+  .identity-trigger .avatar {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--accent); color: white;
+    font-size: 11px; font-weight: 700;
+    display: inline-flex; align-items: center; justify-content: center;
+    line-height: 1;
+  }
+  .identity-trigger .ident-name {
+    max-width: 120px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .identity-trigger .ident-caret { font-size: 9px; color: var(--muted); }
+  .identity-panel {
+    display: none;
+    position: absolute;
+    top: 100%; right: 0;
+    margin-top: 6px;
+    min-width: 280px;
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.18);
+    z-index: 1100;
+    padding: 10px 12px;
+  }
+  .identity-control.open .identity-panel { display: block; }
+  .identity-panel .panel-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 0;
+    font-size: 12px; color: var(--muted);
+  }
+  .identity-panel .panel-row + .panel-row {
+    border-top: 1px dashed var(--rule);
+  }
+  .identity-panel .panel-row select {
+    flex: 1;
+    font: inherit; font-size: 12px;
+    padding: 4px 6px;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    background: var(--input-bg); color: var(--ink);
+  }
+  .identity-panel .panel-row button {
+    font: inherit; font-size: 12px;
+    padding: 4px 10px;
+  }
+  .identity-panel .sync-line {
+    font-size: 11px; color: var(--muted);
+    padding-top: 2px;
+  }
 
   /* Print view (default: trail journal of hiked sections) */
   @media print {
@@ -509,31 +721,51 @@
     <span id="stat-planned" style="color: var(--plan);"></span>
   </div>
   <div class="progress-bar"><div id="progress-fill" style="width:0%"></div></div>
-  <div class="profile-control">
-    <span>Profile:</span>
-    <select id="profile-select" title="Switch hiker profile"></select>
-    <button id="profile-add" title="Add a profile">+</button>
-    <button id="profile-rename" title="Rename current profile">✎</button>
-    <button id="profile-delete" title="Delete current profile">✕</button>
-  </div>
-  <div class="auth-control" id="auth-control">
-    <button id="signin-btn" title="Sign in with Google to sync across devices">Sign in</button>
-    <span id="signed-in-as" style="display:none;font-size:12px;color:var(--muted);"></span>
-    <button id="signout-btn" style="display:none;" title="Sign out">Sign out</button>
-    <span id="sync-status" style="font-size:11px;color:var(--muted);"></span>
+  <div class="identity-control" id="identity-control">
+    <button class="identity-trigger" id="identity-trigger" aria-haspopup="true" aria-expanded="false" title="Profile and sync">
+      <span class="avatar" id="identity-avatar">M</span>
+      <span class="ident-name" id="identity-label">Me</span>
+      <span class="ident-caret">▾</span>
+    </button>
+    <div class="identity-panel" id="identity-panel" role="menu">
+      <div class="panel-row">
+        <span>Profile:</span>
+        <select id="profile-select" title="Switch hiker profile"></select>
+      </div>
+      <div class="panel-row">
+        <button id="profile-add" title="Add a profile">+ Add</button>
+        <button id="profile-rename" title="Rename current profile">✎ Rename</button>
+        <button id="profile-delete" title="Delete current profile">✕ Delete</button>
+      </div>
+      <div class="panel-row" id="auth-control">
+        <button id="signin-btn" title="Sign in with Google to sync across devices">Sign in</button>
+        <span id="signed-in-as" style="display:none;font-size:12px;color:var(--muted);flex:1;"></span>
+        <button id="signout-btn" style="display:none;" title="Sign out">Sign out</button>
+      </div>
+      <div class="sync-line"><span id="sync-status"></span></div>
+    </div>
   </div>
   <div class="actions">
     <button id="search-btn" title="Search trail features (press /)" aria-label="Search">🔎</button>
     <button id="planned-btn">Planned</button>
     <button id="stats-btn">Stats</button>
-    <button id="share-btn">Share / Save</button>
-    <button id="load-btn">Load Code</button>
-    <button id="gpx-export-btn">Export GPX</button>
-    <button id="gpx-import-btn">Import GPX</button>
-    <button id="kml-export-btn" title="Export to KML for Google Earth">Export KML</button>
-    <button id="print-btn">Print Journal</button>
-    <button id="reset-btn">Reset</button>
-    <button id="theme-btn" title="Toggle light/dark theme">☾</button>
+    <div class="overflow-menu" id="actions-more">
+      <button class="overflow-trigger" data-menu-trigger title="More actions" aria-haspopup="true" aria-expanded="false">⋯ More</button>
+      <div class="overflow-list" role="menu">
+        <div class="menu-label">Backup</div>
+        <button id="share-btn">Share / Save</button>
+        <button id="load-btn">Load Code</button>
+        <div class="menu-divider"></div>
+        <div class="menu-label">Export / Import</div>
+        <button id="gpx-export-btn">Export GPX</button>
+        <button id="gpx-import-btn">Import GPX</button>
+        <button id="kml-export-btn" title="Export to KML for Google Earth">Export KML</button>
+        <button id="print-btn">Print Journal</button>
+        <div class="menu-divider"></div>
+        <button id="theme-btn" title="Toggle light/dark theme">☾ Toggle theme</button>
+        <button id="reset-btn">Reset</button>
+      </div>
+    </div>
   </div>
 </header>
 
@@ -545,7 +777,9 @@
         <label><input type="checkbox" id="filter-hiked" /> hiked only</label>
         <label><input type="checkbox" id="filter-planned" /> planned only</label>
         <button id="multi-select-btn" type="button" title="Tap two segments to mark a range" aria-pressed="false" style="font-size: 12px; padding: 4px 8px;">Multi-select</button>
+        <button id="add-trip-btn" type="button" title="Pick a start segment, then an end segment, then a date" aria-pressed="false" style="font-size: 12px; padding: 4px 8px;">+ Trip</button>
       </div>
+      <div id="add-trip-banner" style="display:none;font-size:12px;padding:8px 10px;border-radius:6px;background:var(--plan-bg);color:var(--plan);line-height:1.4;"></div>
       <div class="filter-row">
         <label>View:
           <select id="view-mode">
@@ -619,7 +853,7 @@
   </div>
 </div>
 
-<div class="modal-bg" id="share-plan-modal">
+<div class="modal-bg" id="share-plan-modal" style="z-index: 1050;">
   <div class="modal" style="max-width: 600px;">
     <h2>Share planned trip</h2>
     <p>Anyone with this URL can open the app and load this exact trip.</p>
@@ -634,7 +868,7 @@
   </div>
 </div>
 
-<div class="modal-bg" id="bulk-date-modal">
+<div class="modal-bg" id="bulk-date-modal" style="z-index: 1050;">
   <div class="modal">
     <h2>Set date for range</h2>
     <p>You're marking <strong id="bulk-date-count">0</strong> sections at once. Pick the date for all of them.</p>
@@ -715,10 +949,17 @@
     <h2>Next planned hike — <span id="planned-profile-name"></span></h2>
     <div id="planned-body" style="font-size: 13px;"></div>
     <div class="modal-actions" style="flex-wrap: wrap;">
-      <button id="planned-print">Print plan</button>
-      <button id="planned-share">Share plan</button>
-      <button id="planned-export-kml" title="Just this trip's planned segments">KML</button>
-      <button id="planned-clear">Clear all planned</button>
+      <div class="overflow-menu" id="planned-more">
+        <button class="overflow-trigger" data-menu-trigger title="More plan actions" aria-haspopup="true" aria-expanded="false">⋯ More</button>
+        <div class="overflow-list" role="menu" style="left:0;right:auto;top:auto;bottom:100%;margin:0 0 4px 0;">
+          <div class="menu-label">Export</div>
+          <button id="planned-print">Print plan</button>
+          <button id="planned-share">Share plan</button>
+          <button id="planned-export-kml" title="Just this trip's planned segments">Export KML</button>
+          <div class="menu-divider"></div>
+          <button id="planned-clear">Clear all planned</button>
+        </div>
+      </div>
       <button id="planned-mark-hiked">Mark all as hiked…</button>
       <button id="planned-close" class="primary">Close</button>
     </div>
@@ -903,7 +1144,23 @@
     <div class="row"><span class="swatch" style="background:#7a4f3a"></span> AT trail</div>
     <div class="row"><span class="swatch" style="background:#2a7d3a;height:5px"></span> hiked</div>
     <div class="row"><span class="swatch" style="background:#1a5fb4;height:4px"></span> planned</div>
-    <div class="row"><span class="swatch shelter"></span> shelter</div>
+    <div class="row"><span class="swatch shelter"></span> shelter (segment endpoint)</div>
+    <div class="legend-divider">features (toggle in <span style="font-size:14px;">≡</span>)</div>
+    <div class="row legend-feat"><span>🏔</span> peak</div>
+    <div class="row legend-feat"><span>🌄</span> viewpoint</div>
+    <div class="row legend-feat"><span>🏘️</span> town</div>
+    <div class="row legend-feat"><span>🅿️</span> trailhead parking</div>
+    <div class="row legend-feat"><span>⛺</span> campsite</div>
+    <div class="row legend-feat"><span>🌉</span> bridge</div>
+    <div class="row legend-feat"><span>🚻</span> privy</div>
+    <div class="row legend-feat"><span>📮</span> maildrop</div>
+    <div class="row legend-feat"><span>🏪</span> resupply / store</div>
+    <div class="row legend-feat"><span>🥾</span> outfitter</div>
+    <div class="row legend-feat"><span>🛏</span> hostel</div>
+    <div class="row legend-feat"><span>🏨</span> hotel / motel</div>
+    <div class="row legend-feat"><span>🍽</span> restaurant</div>
+    <div class="row legend-feat"><span>🚐</span> shuttle / service</div>
+    <div class="row legend-feat"><span>🏥</span> medical</div>
     <div class="row"><span class="swatch shelter" style="background:#fff;border:1.5px solid #c89441;color:#a07020;font-weight:700;font-size:9px;display:inline-flex;align-items:center;justify-content:center;width:10px;height:10px;line-height:1;">i</span> local lore</div>
   </div>
 </div>
@@ -911,6 +1168,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=29"></script>
+<script src="app.js?v=34"></script>
 </body>
 </html>
