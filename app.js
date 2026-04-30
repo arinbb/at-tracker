@@ -474,11 +474,15 @@
     `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(filename)}?width=40`;
   const STATE_FLAGS = {
     "Georgia": ["Flag of Georgia (U.S. state).svg"],
+    "North Carolina": ["Flag of North Carolina.svg"],
+    "Tennessee": ["Flag of Tennessee.svg"],
     "North Carolina/Tennessee": ["Flag of North Carolina.svg", "Flag of Tennessee.svg"],
     "Virginia": ["Flag of Virginia.svg"],
     "West Virginia": ["Flag of West Virginia.svg"],
     "Maryland": ["Flag of Maryland.svg"],
     "Pennsylvania": ["Flag of Pennsylvania.svg"],
+    "New Jersey": ["Flag of New Jersey.svg"],
+    "New York": ["Flag of New York.svg"],
     "New Jersey/New York": ["Flag of New Jersey.svg", "Flag of New York.svg"],
     "Connecticut": ["Flag of Connecticut.svg"],
     "Massachusetts": ["Flag of Massachusetts.svg"],
@@ -486,6 +490,21 @@
     "New Hampshire": ["Flag of New Hampshire.svg"],
     "Maine": ["Flag of Maine.svg"],
   };
+  // Decompose the OSM-relation-pair states into individual states for display.
+  // Cumulative-mile thresholds are conservative approximations because the
+  // AT actually zigzags across NC/TN through the Smokies for ~75 mi; we
+  // assign "North Carolina" up through Davenport Gap and "Tennessee" after.
+  // For NJ/NY the boundary is sharper at the NJ/NY state line.
+  function effectiveStateName(seg) {
+    const cum = segCumulative.get(seg.id) || 0;
+    if (seg.state === "North Carolina/Tennessee") {
+      return cum < 240 ? "North Carolina" : "Tennessee";
+    }
+    if (seg.state === "New Jersey/New York") {
+      return cum < 1322 ? "New Jersey" : "New York";
+    }
+    return seg.state;
+  }
   function stateFlagsHTML(stateName) {
     const flags = STATE_FLAGS[stateName];
     if (!flags) return "";
@@ -890,14 +909,33 @@
 
     const segsByState = new Map();
     for (const seg of DATA.segments) {
-      if (!segsByState.has(seg.state)) segsByState.set(seg.state, []);
-      segsByState.get(seg.state).push(seg);
+      const k = effectiveStateName(seg);
+      if (!segsByState.has(k)) segsByState.set(k, []);
+      segsByState.get(k).push(seg);
     }
     if (reverse) {
       for (const list of segsByState.values()) list.reverse();
     }
 
-    const orderedStates = [...DATA.states].sort((a, b) => (reverse ? b.order - a.order : a.order - b.order));
+    // Build the sidebar state list, expanding combined OSM relations into
+    // their constituent states so the listing shows 14 rows instead of 12.
+    const expandedStates = [];
+    for (const st of [...DATA.states].sort((a, b) => a.order - b.order)) {
+      if (st.name === "North Carolina/Tennessee") {
+        const ncMi = (segsByState.get("North Carolina") || []).reduce((a, s) => a + s.miles, 0);
+        const tnMi = (segsByState.get("Tennessee") || []).reduce((a, s) => a + s.miles, 0);
+        expandedStates.push({ name: "North Carolina", order: st.order, miles: ncMi });
+        expandedStates.push({ name: "Tennessee", order: st.order + 0.5, miles: tnMi });
+      } else if (st.name === "New Jersey/New York") {
+        const njMi = (segsByState.get("New Jersey") || []).reduce((a, s) => a + s.miles, 0);
+        const nyMi = (segsByState.get("New York") || []).reduce((a, s) => a + s.miles, 0);
+        expandedStates.push({ name: "New Jersey", order: st.order, miles: njMi });
+        expandedStates.push({ name: "New York", order: st.order + 0.5, miles: nyMi });
+      } else {
+        expandedStates.push(st);
+      }
+    }
+    const orderedStates = expandedStates.sort((a, b) => (reverse ? b.order - a.order : a.order - b.order));
     const totalMi = DATA.segments.reduce((a, s) => a + s.miles, 0);
     const html = [];
     for (const st of orderedStates) {
@@ -1652,6 +1690,23 @@
       renderPlannedSummary();
     });
 
+    // Pin/unpin overnight stops in the calendar (delegated click)
+    $("planned-itinerary")?.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-pin-stop]");
+      if (!btn) return;
+      e.preventDefault();
+      const stopName = btn.dataset.pinStop;
+      const t = ensureActiveTrip();
+      if (!Array.isArray(t.pins)) t.pins = [];
+      const idx = t.pins.indexOf(stopName);
+      if (idx >= 0) t.pins.splice(idx, 1);
+      else t.pins.push(stopName);
+      saveTrips();
+      // Re-render only the calendar div
+      const itEl = $("planned-itinerary");
+      if (itEl) itEl.innerHTML = renderItineraryHTML(plannedSegs, pace, startDate, zeroFreq);
+    });
+
     // Wire pace, start date, zero-day inputs — all live-recompute the itinerary
     const recomputeItinerary = () => {
       const v = Math.max(1, Math.min(50, Number($("pace-input").value) || 12));
@@ -1678,8 +1733,9 @@
   // Build a day-by-day plan: walk planned segments in order, accumulating
   // miles up to `pace`. Prefer to stop at a shelter endpoint near the day's
   // target. Insert zero days at the configured frequency.
-  function buildItinerary(plannedSegs, paceMi, startISO, zeroFreq) {
+  function buildItinerary(plannedSegs, paceMi, startISO, zeroFreq, pinNames) {
     const days = [];
+    const pinSet = new Set(pinNames || []);
     let curMi = 0;
     let curGain = 0;
     let curLoss = 0;
@@ -1688,6 +1744,48 @@
     let dayStartSegIdx = 0; // first plannedSegs index belonging to this day
     let consumedMiInCurSeg = 0; // miles used out of the current segment
     while (segIdx < plannedSegs.length) {
+      // Pin check: if a pinned overnight stop is within 2.5x pace ahead,
+      // force the day to end exactly there (override the algorithmic logic).
+      let pinSegIdx = -1;
+      {
+        let aheadMi = -consumedMiInCurSeg;
+        for (let i = segIdx; i < plannedSegs.length; i++) {
+          const s = plannedSegs[i];
+          aheadMi += s.miles;
+          if (pinSet.has(s.to)) { pinSegIdx = i; break; }
+          if (aheadMi > paceMi * 2.5) break;
+        }
+      }
+      if (pinSegIdx >= 0) {
+        let dayMi = 0, dayGain = 0, dayLoss = 0;
+        for (let i = segIdx; i <= pinSegIdx; i++) {
+          const s = plannedSegs[i];
+          const consumed = (i === segIdx) ? (s.miles - consumedMiInCurSeg) : s.miles;
+          dayMi += consumed;
+          dayGain += (s.elev_gain || 0) * (consumed / s.miles);
+          dayLoss += (s.elev_loss || 0) * (consumed / s.miles);
+        }
+        const lastSeg = plannedSegs[pinSegIdx];
+        const k = breakpointKind(lastSeg.to);
+        const daySegs = plannedSegs.slice(dayStartSegIdx, pinSegIdx + 1);
+        days.push({
+          from: dayStart,
+          to: lastSeg.to,
+          toIcon: k.icon,
+          toKind: k.kind,
+          miles: dayMi,
+          gain: dayGain,
+          loss: dayLoss,
+          segs: daySegs,
+          pinned: true,
+        });
+        dayStart = lastSeg.to;
+        dayStartSegIdx = pinSegIdx + 1;
+        segIdx = pinSegIdx + 1;
+        consumedMiInCurSeg = 0;
+        curMi += dayMi; curGain += dayGain; curLoss += dayLoss;
+        continue;
+      }
       const target = paceMi;
       // Walk forward until we hit target or run out of segments
       let dayMi = 0;
@@ -1814,7 +1912,9 @@
   }
   function renderItineraryHTML(plannedSegs, pace, startISO, zeroFreq) {
     if (plannedSegs.length === 0) return "";
-    const itinerary = buildItinerary(plannedSegs, pace, startISO, zeroFreq);
+    const t = getActiveTrip();
+    const pins = t && Array.isArray(t.pins) ? t.pins : [];
+    const itinerary = buildItinerary(plannedSegs, pace, startISO, zeroFreq, pins);
     const rows = [];
     let cumMi = 0, hikeNum = 0;
     for (const d of itinerary) {
@@ -1828,10 +1928,14 @@
         hikeNum++;
         cumMi += d.miles;
         const dayFtPerMi = d.miles > 0 ? (d.gain + d.loss) / d.miles : 0;
+        const isPinned = !!d.pinned;
+        const pinTitle = isPinned ? "Pinned overnight stop — click to unpin" : "Pin this stop as a required overnight";
         rows.push(
-          `<div class="iti-row"><span class="iti-day">${dayOfWeek(d.date)}</span>` +
+          `<div class="iti-row${isPinned ? " iti-pinned" : ""}"><span class="iti-day">${dayOfWeek(d.date)}</span>` +
           `<span class="iti-date">${escapeHtml(d.date)}</span>` +
-          `<span class="iti-text">Day ${hikeNum}: <strong>${escapeHtml(d.from)}</strong> → <strong>${d.toIcon} ${escapeHtml(d.to)}</strong></span>` +
+          `<span class="iti-text">Day ${hikeNum}: <strong>${escapeHtml(d.from)}</strong> → <strong>${d.toIcon} ${escapeHtml(d.to)}</strong> ` +
+            `<button class="iti-pin${isPinned ? " on" : ""}" data-pin-stop="${escapeHtml(d.to)}" title="${pinTitle}" aria-label="${pinTitle}" aria-pressed="${isPinned}">📌</button>` +
+          `</span>` +
           `<span class="iti-stats">${d.miles.toFixed(1)} mi · ${cumMi.toFixed(1)} cum · +${Math.round(d.gain)}/−${Math.round(d.loss)} ft ${difficultyBadgeHTML(dayFtPerMi, { compact: true })}</span>` +
           `</div>`
         );
@@ -2140,7 +2244,7 @@
   }
   function updateStateHeader(stateEl) {
     const stateName = stateEl.dataset.state;
-    const segs = DATA.segments.filter((s) => s.state === stateName);
+    const segs = DATA.segments.filter((s) => effectiveStateName(s) === stateName);
     const hikedCount = segs.filter((s) => progress.has(s.id)).length;
     const hikedMi = segs
       .filter((s) => progress.has(s.id))
