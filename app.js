@@ -423,6 +423,14 @@
         if (km < bestKm) { bestKm = km; bestSeg = m; }
       }
       if (bestSeg && bestKm <= MAX_KM) {
+        // Compute and stash a mile-from-Springer for sorting + display.
+        // Prefer wikitrail's mi_springer when present, else use our segment's
+        // cumulative mile (start of segment).
+        const ourMi = (segCumulative.get(bestSeg.id) || 0);
+        f._mile = (typeof f.mi_springer === "number" && f.mi_springer > 0)
+          ? f.mi_springer
+          : ourMi;
+        f._matchKm = bestKm;
         if (!segFeatures.has(bestSeg.id)) segFeatures.set(bestSeg.id, []);
         segFeatures.get(bestSeg.id).push(f);
       }
@@ -936,9 +944,24 @@
       }
     }
     for (const kind in buckets) {
-      buckets[kind].sort((a, b) => (a.mi_springer || 0) - (b.mi_springer || 0));
+      buckets[kind].sort((a, b) => (a._mile || 0) - (b._mile || 0));
     }
     return buckets;
+  }
+  // Build the human-readable context string for a feature chip:
+  // - peaks/views: "(6,289 ft) · mi 1856"
+  // - towns/businesses with off-trail offset: "0.5W · in Pearisburg, VA · mi 638"
+  // - everything else: "mi 1234"
+  function featureContextHTML(f) {
+    const bits = [];
+    if (typeof f.elev_m === "number" && f.elev_m > 0) {
+      const ft = Math.round(f.elev_m * 3.28084);
+      bits.push(`${ft.toLocaleString()} ft`);
+    }
+    if (f.off > 0) bits.push(`${f.off}${f.off_dir}`);
+    if (f.parent_town) bits.push(`in ${escapeHtml(f.parent_town)}`);
+    if (typeof f._mile === "number" && f._mile > 0) bits.push(`mi ${f._mile.toFixed(0)}`);
+    return bits.length ? ` <small style="color:var(--muted);">${bits.join(" · ")}</small>` : "";
   }
   function renderPlannedSummary() {
     const plannedSegs = [...planned]
@@ -955,14 +978,15 @@
     const ftPerMi = hasElev && totalMi > 0 ? (gain + loss) / totalMi : 0;
     const stress = stressLevel(ftPerMi);
 
-    // Endpoints classified by kind
-    const endpoints = new Map(); // name -> {kind, icon}
+    // Endpoints classified by kind, with cumulative mile from southern terminus.
+    const endpoints = new Map(); // name -> {kind, icon, mile}
     for (const s of plannedSegs) {
-      if (!endpoints.has(s.from)) endpoints.set(s.from, breakpointKind(s.from));
-      if (!endpoints.has(s.to)) endpoints.set(s.to, breakpointKind(s.to));
+      const startMi = segCumulative.get(s.id) || 0;
+      if (!endpoints.has(s.from)) endpoints.set(s.from, { ...breakpointKind(s.from), mile: startMi });
+      if (!endpoints.has(s.to)) endpoints.set(s.to, { ...breakpointKind(s.to), mile: startMi + s.miles });
     }
-    const shelters = [...endpoints].filter(([, v]) => v.kind === "shelter").map(([n]) => n);
-    const roads = [...endpoints].filter(([, v]) => v.kind === "road").map(([n]) => n);
+    const shelters = [...endpoints].filter(([, v]) => v.kind === "shelter").sort((a, b) => a[1].mile - b[1].mile).map(([n, v]) => ({name: n, mile: v.mile}));
+    const roads = [...endpoints].filter(([, v]) => v.kind === "road").sort((a, b) => a[1].mile - b[1].mile).map(([n, v]) => ({name: n, mile: v.mile}));
 
     // Pace (mi/day) — persist user's preference across reloads.
     const pace = Math.max(1, Math.min(50, Number(prefs.pace) || 12));
@@ -1080,19 +1104,25 @@
         const items = featureBuckets[g.kind];
         if (!items || items.length === 0) continue;
         html.push(`<h3>${g.emoji} ${g.label} (${items.length})</h3>`);
-        html.push(`<div class="endpoints-list">${items.map((f) =>
-          `<span class="ep" title="${f.off > 0 ? `${f.off}${f.off_dir} from trail` : "on trail"}${f.parent_town ? ` · in ${escapeHtml(f.parent_town)}` : ""}">${g.emoji} ${escapeHtml(f.name)}${f.off > 0 ? ` <small style="color:var(--muted);">${f.off}${f.off_dir}</small>` : ""}</span>`
-        ).join("")}</div>`);
+        html.push(`<div class="endpoints-list">${items.map((f) => {
+          const titleBits = [];
+          if (f.off > 0) titleBits.push(`${f.off}${f.off_dir} from trail`);
+          if (f.parent_town) titleBits.push(`in ${f.parent_town}`);
+          if (typeof f._mile === "number" && f._mile > 0) titleBits.push(`mile ${f._mile.toFixed(1)} from Springer`);
+          const title = titleBits.join(" · ");
+          return `<span class="ep" title="${escapeHtml(title)}">${g.emoji} ${escapeHtml(f.name)}${featureContextHTML(f)}</span>`;
+        }).join("")}</div>`);
       }
 
       // Endpoint chips (from segment endpoints, not features)
+      const epChip = (icon, item) => `<span class="ep" title="mile ${item.mile.toFixed(1)} from southern terminus">${icon} ${escapeHtml(item.name)} <small style="color:var(--muted);">mi ${item.mile.toFixed(0)}</small></span>`;
       if (shelters.length > 0) {
-        html.push(`<h3>🛖 Shelters on route</h3>`);
-        html.push(`<div class="endpoints-list">${shelters.map((n) => `<span class="ep">🛖 ${escapeHtml(n)}</span>`).join("")}</div>`);
+        html.push(`<h3>🛖 Shelters on route (${shelters.length})</h3>`);
+        html.push(`<div class="endpoints-list">${shelters.map((s) => epChip("🛖", s)).join("")}</div>`);
       }
       if (roads.length > 0) {
-        html.push(`<h3>🛣️ Road access points</h3>`);
-        html.push(`<div class="endpoints-list">${roads.map((n) => `<span class="ep">🛣️ ${escapeHtml(n)}</span>`).join("")}</div>`);
+        html.push(`<h3>🛣️ Road access points (${roads.length})</h3>`);
+        html.push(`<div class="endpoints-list">${roads.map((s) => epChip("🛣️", s)).join("")}</div>`);
       }
       if (!hasElev) {
         html.push(`<h3>Note</h3>`);
