@@ -2315,6 +2315,23 @@
 
   // -------- Event handlers --------
   function onSidebarClick(e) {
+    // In add-trip mode, ANY click on a segment row counts as a pick — even
+    // taps that land on the bookmark/zoom/lore icons. This must fire before
+    // the lore/plan/zoom button handlers below, otherwise a slightly-off tap
+    // gets swallowed by those handlers and the user sees clicks "do nothing"
+    // (which manifests as needing an extra click before the modal opens).
+    if (addTripMode) {
+      const segRow = e.target.closest(".seg[data-seg]");
+      if (segRow) {
+        e.preventDefault();
+        e.stopPropagation();
+        const cb = segRow.querySelector('[data-toggle]');
+        if (cb) cb.checked = progress.has(Number(cb.dataset.toggle));
+        const id = Number(segRow.dataset.seg);
+        handleAddTripPick(id);
+        return;
+      }
+    }
     const loreBtn = e.target.closest("[data-lore]");
     if (loreBtn) {
       e.preventDefault();
@@ -2390,21 +2407,6 @@
       if (stateEl.classList.contains("collapsed")) openStates.delete(stateName);
       else openStates.add(stateName);
       return;
-    }
-    // Add-trip mode: any click on a segment row (checkbox, name, blank space)
-    // is interpreted as a trip start/end pick. Do NOT toggle the checkbox.
-    if (addTripMode) {
-      const segRow = e.target.closest(".seg[data-seg]");
-      if (segRow) {
-        e.preventDefault();
-        e.stopPropagation();
-        // Roll back any visual checkbox flip the click may have caused.
-        const cb = segRow.querySelector('[data-toggle]');
-        if (cb) cb.checked = progress.has(Number(cb.dataset.toggle));
-        const id = Number(segRow.dataset.seg);
-        handleAddTripPick(id);
-        return;
-      }
     }
     const cb = e.target.closest("[data-toggle]");
     if (cb) {
