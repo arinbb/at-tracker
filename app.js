@@ -34,6 +34,9 @@
   let DATA = null;
   let FEATURES = null; // {features:[...]} from at_features.json
   let segFeatures = new Map(); // segId -> [feature, ...]
+  let featureLayerGroups = new Map(); // kind -> Leaflet layer group
+  let featureById = new Map(); // feature.id -> feature (for global search/zoom)
+  let layerControl = null;
   let LORE = []; // loaded from at_lore.json
   let loreBySegId = new Map(); // segId -> [lore entry, ...]
   let loreLayer = null;
@@ -41,6 +44,8 @@
   let segCumulative = new Map();
   let progress = new Map();
   let planned = new Set();
+  let trips = []; // [{id, name, createdAt, segs: [ids]}]; planned is derived from active trip
+  let activeTripId = null;
   let notes = new Map();
   let prefs = {
     direction: "nobo",
@@ -81,6 +86,7 @@
   function progressKey(name) { return `at-tracker-progress::${name}`; }
   function notesKey(name) { return `at-tracker-notes::${name}`; }
   function plannedKey(name) { return `at-tracker-planned::${name}`; }
+  function tripsKey(name) { return `at-tracker-trips::${name}`; }
 
   // -------- Encoding (URL share) --------
   function encodeProgress(prog) {
@@ -182,6 +188,19 @@
     progress = loadProgressForActive();
     planned = loadPlannedForActive();
     notes = loadNotesForActive();
+    {
+      const td = loadTripsForActive();
+      trips = td.trips;
+      activeTripId = td.activeTripId;
+      // If trips were loaded, prefer them as the source of truth.
+      if (trips.length > 0) syncPlannedFromActiveTrip();
+      else if (planned.size > 0) {
+        // Wrap legacy planned set into a default trip and persist
+        ensureActiveTrip();
+        syncActiveTripFromPlanned();
+        saveTrips();
+      }
+    }
     renderProfileSelect();
     renderSections();
     updateStats();
@@ -206,6 +225,72 @@
     }
     return new Map();
   }
+  // -------- Trips --------
+  // Per-profile list of saved planned hikes; activeTripId is the one currently
+  // shown as "planned" in the sidebar/map. The legacy single-set planned API
+  // is preserved by mirroring the active trip into the `planned` Set.
+  function loadTripsForActive() {
+    const raw = safeGet(tripsKey(activeProfile));
+    if (raw) {
+      try {
+        const obj = JSON.parse(raw);
+        if (Array.isArray(obj.trips)) {
+          return { trips: obj.trips, activeTripId: obj.activeTripId };
+        }
+      } catch (e) {}
+    }
+    // Legacy migration: if we have a planned set but no trips, wrap it.
+    const legacy = loadPlannedForActive();
+    if (legacy.size > 0) {
+      const t = {
+        id: "default-" + Date.now(),
+        name: "My next hike",
+        createdAt: Date.now(),
+        segs: [...legacy],
+      };
+      return { trips: [t], activeTripId: t.id };
+    }
+    return { trips: [], activeTripId: null };
+  }
+  function saveTrips() {
+    safeSet(tripsKey(activeProfile), JSON.stringify({ trips, activeTripId }));
+    scheduleCloudSave();
+  }
+  function getActiveTrip() {
+    return trips.find((t) => t.id === activeTripId) || null;
+  }
+  function ensureActiveTrip() {
+    let t = getActiveTrip();
+    if (t) return t;
+    t = {
+      id: "trip-" + Date.now(),
+      name: "My next hike",
+      createdAt: Date.now(),
+      segs: [],
+    };
+    trips.push(t);
+    activeTripId = t.id;
+    return t;
+  }
+  function syncPlannedFromActiveTrip() {
+    const t = getActiveTrip();
+    planned = new Set(t ? t.segs.map(Number) : []);
+  }
+  function syncActiveTripFromPlanned() {
+    const t = getActiveTrip();
+    if (!t) return;
+    t.segs = [...planned];
+  }
+  function switchTrip(tripId) {
+    if (!trips.find((t) => t.id === tripId)) return;
+    activeTripId = tripId;
+    saveTrips();
+    syncPlannedFromActiveTrip();
+    renderSections();
+    updateStats();
+    refreshMapStyles();
+  }
+
   function loadPlannedForActive() {
     const hash = location.hash.replace(/^#/, "");
     const params = new URLSearchParams(hash);
@@ -274,7 +359,11 @@
         'tiles © <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)',
     });
     osm.addTo(map);
-    L.control.layers({ "OpenStreetMap": osm, "OpenTopoMap (terrain)": topo }, null, { position: "topright" }).addTo(map);
+    layerControl = L.control.layers(
+      { "OpenStreetMap": osm, "OpenTopoMap (terrain)": topo },
+      null,
+      { position: "topright", collapsed: true }
+    ).addTo(map);
 
     // Custom map legend control
     const Legend = L.Control.extend({
@@ -434,7 +523,245 @@
         if (!segFeatures.has(bestSeg.id)) segFeatures.set(bestSeg.id, []);
         segFeatures.get(bestSeg.id).push(f);
       }
+      featureById.set(f.id, f);
     }
+  }
+  // Per-kind config for the toggleable map layers.
+  const FEATURE_KIND_CONFIG = [
+    { kind: "peak",       emoji: "🏔",  label: "Peaks",       defaultOn: true  },
+    { kind: "view",       emoji: "🌄",  label: "Viewpoints",  defaultOn: true  },
+    { kind: "town",       emoji: "🏘️", label: "Towns",       defaultOn: true  },
+    { kind: "maildrop",   emoji: "📮",  label: "Maildrops",   defaultOn: false },
+    { kind: "resupply",   emoji: "🏪",  label: "Resupply",    defaultOn: true  },
+    { kind: "outfitter",  emoji: "🥾",  label: "Outfitters",  defaultOn: false },
+    { kind: "hostel",     emoji: "🛏",  label: "Hostels",     defaultOn: false },
+    { kind: "hotel",      emoji: "🏨",  label: "Hotels",      defaultOn: false },
+    { kind: "restaurant", emoji: "🍽",  label: "Restaurants", defaultOn: false },
+    { kind: "service",    emoji: "🚐",  label: "Shuttles/Services", defaultOn: false },
+    { kind: "medical",    emoji: "🏥",  label: "Medical",     defaultOn: false },
+  ];
+  function buildFeaturePopup(f, cfg) {
+    const bits = [];
+    if (typeof f.elev_m === "number" && f.elev_m > 0) {
+      bits.push(`${Math.round(f.elev_m * 3.28084).toLocaleString()} ft`);
+    }
+    if (f.off > 0) bits.push(`${f.off}${f.off_dir} from trail`);
+    if (f.parent_town) bits.push(`in ${escapeHtml(f.parent_town)}`);
+    if (typeof f._mile === "number" && f._mile > 0) bits.push(`mi ${f._mile.toFixed(1)} from Springer`);
+    if (f.state) bits.push(escapeHtml(f.state));
+    return (
+      `<div class="feat-popup">` +
+      `<strong>${cfg.emoji} ${escapeHtml(f.name)}</strong>` +
+      (bits.length ? `<br><small style="color:var(--muted);">${bits.join(" · ")}</small>` : "") +
+      `</div>`
+    );
+  }
+  function buildFeatureLayers() {
+    if (!FEATURES || !FEATURES.features) return;
+    // Tear down any existing layers (e.g. on data reload)
+    for (const lg of featureLayerGroups.values()) {
+      try { map.removeLayer(lg); } catch (e) {}
+      if (layerControl) try { layerControl.removeLayer(lg); } catch (e) {}
+    }
+    featureLayerGroups.clear();
+    const cfgByKind = new Map(FEATURE_KIND_CONFIG.map((c) => [c.kind, c]));
+    for (const cfg of FEATURE_KIND_CONFIG) {
+      featureLayerGroups.set(cfg.kind, L.layerGroup());
+    }
+    for (const f of FEATURES.features) {
+      if (typeof f.lat !== "number" || typeof f.lon !== "number") continue;
+      const cfg = cfgByKind.get(f.kind);
+      if (!cfg) continue;
+      const icon = L.divIcon({
+        html: `<span class="feat-emoji">${cfg.emoji}</span>`,
+        className: "feat-marker",
+        iconSize: [22, 22],
+        iconAnchor: [11, 22],
+      });
+      const m = L.marker([f.lat, f.lon], { icon, riseOnHover: true, keyboard: false });
+      m.bindPopup(buildFeaturePopup(f, cfg), { autoPan: true, maxWidth: 260 });
+      m.feature = f; // for click handlers
+      m.addTo(featureLayerGroups.get(f.kind));
+    }
+    // Register with the layer control + apply default visibility
+    for (const cfg of FEATURE_KIND_CONFIG) {
+      const lg = featureLayerGroups.get(cfg.kind);
+      const count = lg.getLayers().length;
+      if (cfg.defaultOn) lg.addTo(map);
+      if (layerControl) layerControl.addOverlay(lg, `${cfg.emoji} ${cfg.label} (${count})`);
+    }
+  }
+  // Find a feature in our index by id and zoom to it on the map, opening popup.
+  function focusFeatureOnMap(featureId) {
+    const f = featureById.get(featureId);
+    if (!f) return;
+    const lg = featureLayerGroups.get(f.kind);
+    if (lg && !map.hasLayer(lg)) lg.addTo(map);
+    map.setView([f.lat, f.lon], Math.max(map.getZoom(), 13), { animate: true });
+    if (lg) {
+      lg.eachLayer((m) => {
+        if (m.feature && m.feature.id === f.id) m.openPopup();
+      });
+    }
+  }
+  // Zoom to a segment by id and pulse-highlight the sidebar row.
+  function focusSegmentOnMap(segId) {
+    const layer = segLayers.get(segId);
+    if (!layer) return;
+    map.fitBounds(layer.getBounds(), { padding: [40, 40], maxZoom: 14 });
+    const el = document.querySelector(`[data-seg="${segId}"]`);
+    if (el) {
+      const stateEl = el.closest(".state");
+      if (stateEl) {
+        stateEl.classList.remove("collapsed");
+        openStates.add(stateEl.dataset.state);
+      }
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.add("map-hover");
+      setTimeout(() => el.classList.remove("map-hover"), 1500);
+    }
+  }
+  // -------- Global search --------
+  let searchActive = -1; // index in current search-results list
+  function openSearch() {
+    const ov = $("search-overlay");
+    if (!ov) return;
+    ov.classList.add("show");
+    const inp = $("search-input");
+    inp.value = "";
+    renderSearchResults("");
+    setTimeout(() => inp.focus(), 0);
+  }
+  function closeSearch() {
+    const ov = $("search-overlay");
+    if (ov) ov.classList.remove("show");
+    searchActive = -1;
+  }
+  function searchAll(q) {
+    q = q.trim().toLowerCase();
+    if (!q) return [];
+    const results = [];
+    const score = (text) => {
+      const t = text.toLowerCase();
+      if (!t.includes(q)) return null;
+      // Higher score = better
+      let s = 0;
+      if (t === q) s += 100;
+      if (t.startsWith(q)) s += 50;
+      // Word-start match
+      const words = t.split(/\s+/);
+      if (words.some((w) => w.startsWith(q))) s += 25;
+      // Inverse length penalty (shorter names rank higher when same prefix)
+      s -= Math.min(20, t.length / 4);
+      return s;
+    };
+    // Features
+    if (FEATURES) {
+      for (const f of FEATURES.features) {
+        const s = score(f.name);
+        if (s == null) continue;
+        const cfg = FEATURE_KIND_CONFIG.find((c) => c.kind === f.kind);
+        const ctxBits = [];
+        if (f.parent_town) ctxBits.push(f.parent_town);
+        if (typeof f._mile === "number" && f._mile > 0) ctxBits.push(`mi ${f._mile.toFixed(0)}`);
+        results.push({
+          score: s,
+          icon: cfg ? cfg.emoji : "📍",
+          name: f.name,
+          ctx: ctxBits.join(" · "),
+          action: () => { closeSearch(); focusFeatureOnMap(f.id); },
+        });
+      }
+    }
+    // Lore
+    for (const entry of LORE) {
+      const s = score(entry.title);
+      if (s == null) continue;
+      results.push({
+        score: s + 10, // small boost — curated content is high-value
+        icon: "ℹ",
+        name: entry.title,
+        ctx: "lore",
+        action: () => {
+          closeSearch();
+          map.setView([entry.lat, entry.lon], 13, { animate: true });
+        },
+      });
+    }
+    // Segments by from/to name
+    if (DATA && DATA.segments) {
+      for (const seg of DATA.segments) {
+        const s = Math.max(score(seg.from) || -Infinity, score(seg.to) || -Infinity);
+        if (!isFinite(s)) continue;
+        const cumStart = segCumulative.get(seg.id) || 0;
+        results.push({
+          score: s - 5, // slight penalty so feature names tend to win
+          icon: "🥾",
+          name: `${seg.from} → ${seg.to}`,
+          ctx: `${seg.state} · mi ${cumStart.toFixed(0)}`,
+          action: () => { closeSearch(); focusSegmentOnMap(seg.id); },
+        });
+      }
+    }
+    results.sort((a, b) => b.score - a.score);
+    return results.slice(0, 30);
+  }
+  function renderSearchResults(q) {
+    const out = $("search-results");
+    if (!out) return;
+    const results = searchAll(q);
+    if (!q) {
+      out.innerHTML = `<div style="padding: 16px 10px; color: var(--muted); font-size: 13px;">Try: McAfee Knob, Hot Springs, Damascus, Mt Washington, Roan, Springer…</div>`;
+      searchActive = -1;
+      return;
+    }
+    if (results.length === 0) {
+      out.innerHTML = `<div style="padding: 16px 10px; color: var(--muted); font-size: 13px;">No matches for "${escapeHtml(q)}"</div>`;
+      searchActive = -1;
+      return;
+    }
+    out.innerHTML = results.map((r, i) =>
+      `<div class="row${i === 0 ? " active" : ""}" data-search-idx="${i}">` +
+      `<span class="icon">${r.icon}</span>` +
+      `<span class="name">${escapeHtml(r.name)}</span>` +
+      `<span class="ctx">${escapeHtml(r.ctx || "")}</span>` +
+      `</div>`
+    ).join("");
+    searchActive = 0;
+    // Wire click handlers
+    out.querySelectorAll(".row").forEach((row, i) => {
+      row.addEventListener("click", () => results[i].action());
+    });
+    // Stash for keyboard nav
+    out._results = results;
+  }
+  function searchKeyDown(e) {
+    const out = $("search-results");
+    const results = out && out._results;
+    if (!results || results.length === 0) {
+      if (e.key === "Escape") closeSearch();
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      searchActive = Math.min(results.length - 1, searchActive + 1);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      searchActive = Math.max(0, searchActive - 1);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (results[searchActive]) results[searchActive].action();
+      return;
+    } else if (e.key === "Escape") {
+      closeSearch();
+      return;
+    } else {
+      return;
+    }
+    out.querySelectorAll(".row").forEach((row, i) => {
+      row.classList.toggle("active", i === searchActive);
+      if (i === searchActive) row.scrollIntoView({ block: "nearest" });
+    });
   }
   // -------- Lore --------
   function attachLoreToSegments() {
@@ -1012,6 +1339,26 @@
 
     const grid = (rows) => `<div class="stat-grid">${rows.map(([k, v]) => `<div class="label">${k}</div><div class="val">${v}</div>`).join("")}</div>`;
     const html = [];
+    // Trip selector + new/rename/delete actions (always shown so user can create one)
+    {
+      const t = getActiveTrip();
+      html.push(`<div class="trip-control">`);
+      html.push(`<label>Trip: <select id="trip-select" title="Choose a saved planned trip">`);
+      if (trips.length === 0) {
+        html.push(`<option value="">(none)</option>`);
+      } else {
+        for (const tt of trips) {
+          html.push(`<option value="${escapeHtml(tt.id)}"${tt.id === activeTripId ? " selected" : ""}>${escapeHtml(tt.name)} · ${tt.segs.length} sec</option>`);
+        }
+      }
+      html.push(`</select></label>`);
+      html.push(`<button id="trip-new" title="Save current planned set as a new trip">+ New</button>`);
+      if (t) {
+        html.push(`<button id="trip-rename" title="Rename current trip">✎</button>`);
+        html.push(`<button id="trip-delete" title="Delete current trip">✕</button>`);
+      }
+      html.push(`</div>`);
+    }
     if (plannedSegs.length === 0) {
       html.push(`<div class="empty">No planned segments yet. Click the flag icon next to any unhiked section to mark it as your next planned hike.</div>`);
     } else {
@@ -1132,6 +1479,47 @@
     $("planned-profile-name").textContent = activeProfile;
     $("planned-body").innerHTML = html.join("");
     $("planned-modal").classList.add("show");
+
+    // Wire trip selector + actions (newly rendered)
+    $("trip-select")?.addEventListener("change", (e) => {
+      switchTrip(e.target.value);
+      renderPlannedSummary();
+    });
+    $("trip-new")?.addEventListener("click", () => {
+      const name = (prompt("Name this trip (e.g. 'Smokies 2025'):", `Trip ${trips.length + 1}`) || "").trim();
+      if (!name) return;
+      const t = { id: "trip-" + Date.now(), name, createdAt: Date.now(), segs: [...planned] };
+      trips.push(t);
+      activeTripId = t.id;
+      saveTrips();
+      renderPlannedSummary();
+    });
+    $("trip-rename")?.addEventListener("click", () => {
+      const t = getActiveTrip();
+      if (!t) return;
+      const name = (prompt("Rename trip to:", t.name) || "").trim();
+      if (!name || name === t.name) return;
+      t.name = name;
+      saveTrips();
+      renderPlannedSummary();
+    });
+    $("trip-delete")?.addEventListener("click", () => {
+      const t = getActiveTrip();
+      if (!t) return;
+      if (!confirm(`Delete trip "${t.name}"? This removes the saved trip but does not unmark any segments as planned.`)) return;
+      const wasSegs = [...t.segs];
+      trips = trips.filter((x) => x.id !== activeTripId);
+      activeTripId = trips.length > 0 ? trips[0].id : null;
+      // If no other trip exists, the planned set goes empty
+      if (!activeTripId) planned = new Set();
+      else syncPlannedFromActiveTrip();
+      saveTrips();
+      saveProgress();
+      renderSections();
+      updateStats();
+      refreshMapStyles();
+      renderPlannedSummary();
+    });
 
     // Wire pace, start date, zero-day inputs — all live-recompute the itinerary
     const recomputeItinerary = () => {
@@ -1416,8 +1804,11 @@
       e.preventDefault();
       e.stopPropagation();
       const id = Number(planBtn.dataset.plan);
+      ensureActiveTrip();
       if (planned.has(id)) planned.delete(id);
       else planned.add(id);
+      syncActiveTripFromPlanned();
+      saveTrips();
       saveProgress();
       updateStats();
       refreshMapStyles();
@@ -1720,6 +2111,19 @@
     progress = loadProgressForActive();
     planned = loadPlannedForActive();
     notes = loadNotesForActive();
+    {
+      const td = loadTripsForActive();
+      trips = td.trips;
+      activeTripId = td.activeTripId;
+      // If trips were loaded, prefer them as the source of truth.
+      if (trips.length > 0) syncPlannedFromActiveTrip();
+      else if (planned.size > 0) {
+        // Wrap legacy planned set into a default trip and persist
+        ensureActiveTrip();
+        syncActiveTripFromPlanned();
+        saveTrips();
+      }
+    }
     renderProfileSelect();
     renderSections();
     updateStats();
@@ -1734,17 +2138,17 @@
     el.textContent = text || "";
   }
   function buildCloudPayload() {
-    // One Firestore doc per user. All profiles plus prefs in one place.
-    // Read each profile's data from localStorage.
     const profileData = {};
     for (const name of profiles) {
       const prog = safeGet(progressKey(name));
       const pl = safeGet(plannedKey(name));
       const nt = safeGet(notesKey(name));
+      const tr = safeGet(tripsKey(name));
       profileData[name] = {
         hiked: prog ? safeJsonParse(prog, {}) : {},
         planned: pl ? safeJsonParse(pl, []) : [],
         notes: nt ? safeJsonParse(nt, {}) : {},
+        trips: tr ? safeJsonParse(tr, { trips: [], activeTripId: null }) : { trips: [], activeTripId: null },
       };
     }
     return {
@@ -1772,6 +2176,7 @@
         if (pdata.hiked) safeSet(progressKey(name), JSON.stringify(pdata.hiked));
         if (pdata.planned) safeSet(plannedKey(name), JSON.stringify(pdata.planned));
         if (pdata.notes) safeSet(notesKey(name), JSON.stringify(pdata.notes));
+        if (pdata.trips) safeSet(tripsKey(name), JSON.stringify(pdata.trips));
       }
       if (data.prefs) {
         prefs = { ...prefs, ...data.prefs };
@@ -1786,6 +2191,10 @@
       progress = loadProgressForActive();
       planned = loadPlannedForActive();
       notes = loadNotesForActive();
+      const td = loadTripsForActive();
+      trips = td.trips;
+      activeTripId = td.activeTripId;
+      if (trips.length > 0) syncPlannedFromActiveTrip();
     } finally {
       cloudInhibit = false;
     }
@@ -1868,11 +2277,12 @@
   function buildBackup() {
     return {
       app: "at-section-tracker",
-      version: 1,
+      version: 2,
       exported: new Date().toISOString(),
       profile: activeProfile,
       hiked: Object.fromEntries(progress),
       planned: [...planned],
+      trips: { trips, activeTripId },
       notes: Object.fromEntries([...notes].filter(([, v]) => v)),
     };
   }
@@ -1910,6 +2320,16 @@
     progress = new Map(Object.entries(obj.hiked || {}).map(([k, v]) => [Number(k), String(v || "")]));
     planned = new Set((obj.planned || []).map(Number));
     notes = new Map(Object.entries(obj.notes || {}).map(([k, v]) => [Number(k), String(v || "")]));
+    if (obj.trips && Array.isArray(obj.trips.trips)) {
+      trips = obj.trips.trips;
+      activeTripId = obj.trips.activeTripId || (trips[0] && trips[0].id) || null;
+      if (trips.length > 0) syncPlannedFromActiveTrip();
+      saveTrips();
+    } else if (planned.size > 0) {
+      ensureActiveTrip();
+      syncActiveTripFromPlanned();
+      saveTrips();
+    }
     saveProgress();
     saveNotes();
     renderProfileSelect();
@@ -2087,6 +2507,7 @@
       if (fr.ok) {
         FEATURES = await fr.json();
         matchFeaturesToSegments();
+        buildFeatureLayers();
       }
     } catch (e) {
       console.warn("at_features.json load failed:", e);
@@ -2127,6 +2548,19 @@
     progress = loadProgressForActive();
     planned = loadPlannedForActive();
     notes = loadNotesForActive();
+    {
+      const td = loadTripsForActive();
+      trips = td.trips;
+      activeTripId = td.activeTripId;
+      // If trips were loaded, prefer them as the source of truth.
+      if (trips.length > 0) syncPlannedFromActiveTrip();
+      else if (planned.size > 0) {
+        // Wrap legacy planned set into a default trip and persist
+        ensureActiveTrip();
+        syncActiveTripFromPlanned();
+        saveTrips();
+      }
+    }
     prefs = loadPrefs();
 
     directionEl.value = prefs.direction;
@@ -2233,6 +2667,25 @@
     });
 
     wireAuthUI();
+
+    // Global search wiring
+    $("search-btn")?.addEventListener("click", openSearch);
+    $("search-input")?.addEventListener("input", (e) => renderSearchResults(e.target.value));
+    $("search-input")?.addEventListener("keydown", searchKeyDown);
+    $("search-overlay")?.addEventListener("click", (e) => {
+      if (e.target.id === "search-overlay") closeSearch();
+    });
+    document.addEventListener("keydown", (e) => {
+      const tag = (e.target.tagName || "").toLowerCase();
+      const inField = tag === "input" || tag === "textarea" || tag === "select";
+      if (e.key === "/" && !inField) {
+        e.preventDefault();
+        openSearch();
+      } else if ((e.key === "k" || e.key === "K") && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        openSearch();
+      }
+    });
   }
 
   if (document.readyState === "loading") {

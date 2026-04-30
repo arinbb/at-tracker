@@ -238,7 +238,7 @@ def ordered_chain(rel_member_way_ids, ways_by_id):
     line — a 'gap' usually means an unmapped section, which we'll bridge with a
     straight line up to ~5 km, otherwise we start a new chain).
     Returns list of chains (each a list of (lon,lat) coords), ordered south->north."""
-    GAP_BREAK_KM = 5.0  # if we can't bridge, start a new chain
+    GAP_BREAK_KM = 8.0  # if we can't bridge, start a new chain
     chain = []
     chains = []
     for wid in rel_member_way_ids:
