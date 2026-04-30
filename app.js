@@ -1655,6 +1655,7 @@
     let curLoss = 0;
     let dayStart = plannedSegs.length > 0 ? plannedSegs[0].from : null;
     let segIdx = 0;
+    let dayStartSegIdx = 0; // first plannedSegs index belonging to this day
     let consumedMiInCurSeg = 0; // miles used out of the current segment
     while (segIdx < plannedSegs.length) {
       const target = paceMi;
@@ -1732,6 +1733,11 @@
       } else {
         break;
       }
+      const daySegs = plannedSegs.slice(dayStartSegIdx, chosen.segIdxAfter);
+      // If we split a segment, include the in-progress one for KML purposes
+      if (daySegs.length === 0 && segIdx < plannedSegs.length) {
+        daySegs.push(plannedSegs[segIdx]);
+      }
       days.push({
         from: dayStart,
         to: chosen.end,
@@ -1740,7 +1746,9 @@
         miles: chosen.mi,
         gain: chosen.gain,
         loss: chosen.loss,
+        segs: daySegs,
       });
+      dayStartSegIdx = chosen.segIdxAfter;
       dayStart = chosen.end;
       curMi += chosen.mi;
       curGain += chosen.gain;
@@ -2511,7 +2519,8 @@
     lines.push(`    <Style id="planned"><LineStyle><color>${rgbToKml("#1a5fb4")}</color><width>4</width></LineStyle></Style>`);
     lines.push(`    <Style id="trail"><LineStyle><color>${rgbToKml("#7a4f3a", "80")}</color><width>2</width></LineStyle></Style>`);
     lines.push(`    <Style id="shelter"><IconStyle><Icon><href>https://maps.google.com/mapfiles/kml/shapes/triangle.png</href></Icon><scale>0.7</scale></IconStyle></Style>`);
-    lines.push(`    <Style id="peak"><IconStyle><Icon><href>https://maps.google.com/mapfiles/kml/shapes/mountain.png</href></Icon><scale>0.8</scale></IconStyle></Style>`);
+    lines.push(`    <Style id="peak"><IconStyle><Icon><href>https://maps.google.com/mapfiles/kml/shapes/hiker.png</href></Icon><scale>0.8</scale></IconStyle></Style>`);
+    lines.push(`    <Style id="day"><LineStyle><color>${rgbToKml("#1a5fb4")}</color><width>5</width></LineStyle></Style>`);
     lines.push(`    <Style id="town"><IconStyle><Icon><href>https://maps.google.com/mapfiles/kml/paddle/wht-circle.png</href></Icon><scale>0.7</scale></IconStyle></Style>`);
 
     // Hiked folder
@@ -2537,21 +2546,41 @@
       lines.push(`    </Folder>`);
     }
 
-    // Planned folder
+    // Planned folder — split by day-by-day itinerary so Google Earth has
+    // a fold-out for each day of the trip.
     if (plannedOnly.length > 0) {
-      lines.push(`    <Folder><name>Planned sections (${plannedOnly.length})</name>`);
       const t = getActiveTrip();
-      if (t) lines.push(`      <description>From trip "${kmlEscape(t.name)}"</description>`);
-      for (const seg of plannedOnly) {
-        const desc = `${seg.state} · ${seg.miles.toFixed(2)} mi` +
-          (typeof seg.elev_gain === "number" ? ` · +${Math.round(seg.elev_gain)}/−${Math.round(seg.elev_loss)} ft` : "");
-        const coords = seg.geom.map(([lon, lat]) => `${lon},${lat},0`).join(" ");
-        lines.push(`      <Placemark>`);
-        lines.push(`        <name>${kmlEscape(seg.from)} → ${kmlEscape(seg.to)}</name>`);
-        lines.push(`        <description>${kmlEscape(desc)}</description>`);
-        lines.push(`        <styleUrl>#planned</styleUrl>`);
-        lines.push(`        <LineString><tessellate>1</tessellate><coordinates>${coords}</coordinates></LineString>`);
-      lines.push(`      </Placemark>`);
+      const pace = Math.max(1, Math.min(50, Number(prefs.pace) || 12));
+      const startDate = prefs.tripStartDate || todayISO();
+      const zeroFreq = Math.max(0, Math.min(14, Number(prefs.zeroDayFreq) || 0));
+      const itinerary = buildItinerary(plannedOnly, pace, startDate, zeroFreq);
+      const hikeDays = itinerary.filter((d) => d.kind === "hike").length;
+      lines.push(`    <Folder><name>Planned: ${plannedOnly.length} sections · ${hikeDays} day${hikeDays === 1 ? "" : "s"}${t ? " · " + kmlEscape(t.name) : ""}</name>`);
+      lines.push(`      <description>${kmlEscape(t ? "Trip: " + t.name + " · " : "")}Pace ${pace} mi/day from ${startDate}</description>`);
+      // Per-day sub-folders
+      let hikeNum = 0;
+      for (const d of itinerary) {
+        if (d.kind === "zero") {
+          lines.push(`      <Folder><name>🛌 Zero day · ${kmlEscape(d.date)}</name></Folder>`);
+          continue;
+        }
+        hikeNum++;
+        lines.push(`      <Folder><name>Day ${hikeNum} · ${kmlEscape(d.date)} · ${d.miles.toFixed(1)} mi</name>`);
+        const dayDesc = `${kmlEscape(d.from)} → ${kmlEscape(d.to)}\n` +
+          `${d.miles.toFixed(1)} mi · +${Math.round(d.gain)}/−${Math.round(d.loss)} ft`;
+        lines.push(`        <description>${dayDesc}</description>`);
+        for (const seg of (d.segs || [])) {
+          const segDesc = `${seg.state} · ${seg.miles.toFixed(2)} mi` +
+            (typeof seg.elev_gain === "number" ? ` · +${Math.round(seg.elev_gain)}/−${Math.round(seg.elev_loss)} ft` : "");
+          const coords = seg.geom.map(([lon, lat]) => `${lon},${lat},0`).join(" ");
+          lines.push(`        <Placemark>`);
+          lines.push(`          <name>${kmlEscape(seg.from)} → ${kmlEscape(seg.to)}</name>`);
+          lines.push(`          <description>${kmlEscape(segDesc)}</description>`);
+          lines.push(`          <styleUrl>#planned</styleUrl>`);
+          lines.push(`          <LineString><tessellate>1</tessellate><coordinates>${coords}</coordinates></LineString>`);
+          lines.push(`        </Placemark>`);
+        }
+        lines.push(`      </Folder>`);
       }
       lines.push(`    </Folder>`);
     }
