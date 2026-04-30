@@ -335,6 +335,78 @@ out;
     return out
 
 
+# Official NPS APPA service — same constants as build_data.py
+APPA_BASE = "https://services1.arcgis.com/fBc8EJBxQRMcHlei/arcgis/rest/services/ANST_Facilities/FeatureServer"
+APPA_LAYERS = {
+    "bridges": 0,
+    "campsites": 1,
+    "parking": 2,
+    "privies": 3,
+    "shelters": 4,
+    "vistas": 5,
+    "side_trails": 6,
+    "treadway": 7,
+}
+
+
+def fetch_appa_layer(layer_name: str) -> list:
+    """Return all features from one APPA layer as a list of (lat, lon, props)."""
+    cache_root = ROOT / ".cache"
+    cache_root.mkdir(exist_ok=True)
+    cache = cache_root / f"appa_{layer_name}.json"
+    if cache.exists():
+        data = json.loads(cache.read_text())
+    else:
+        layer_id = APPA_LAYERS[layer_name]
+        print(f"  fetching APPA {layer_name} (id={layer_id})...")
+        out = {"type": "FeatureCollection", "features": []}
+        offset = 0
+        page = 2000
+        while True:
+            params = {
+                "where": "1=1", "outFields": "*", "returnGeometry": "true",
+                "f": "geojson", "outSR": "4326",
+                "resultOffset": str(offset), "resultRecordCount": str(page),
+            }
+            url = f"{APPA_BASE}/{layer_id}/query?" + urllib.parse.urlencode(params)
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=300) as r:
+                data_pg = json.loads(r.read())
+            feats = data_pg.get("features", [])
+            out["features"].extend(feats)
+            if len(feats) < page:
+                break
+            offset += len(feats)
+        cache.write_text(json.dumps(out))
+        data = out
+    return data.get("features", [])
+
+
+def appa_features_for(kind_name: str, layer_name: str) -> list:
+    """Convert NPS APPA layer features to our feature dict format."""
+    out = []
+    for f in fetch_appa_layer(layer_name):
+        g = f.get("geometry") or {}
+        if g.get("type") != "Point":
+            continue
+        lon, lat = g["coordinates"][0], g["coordinates"][1]
+        props = f.get("properties") or {}
+        name = (props.get("Name") or props.get("Acronym") or f"Unnamed {kind_name}").strip()
+        out.append({
+            "id": f"nps_{layer_name}_{props.get('OBJECTID') or props.get('GlobalID') or len(out)}",
+            "slug": "",
+            "name": name,
+            "kind": kind_name,
+            "lat": lat, "lon": lon,
+            "mi_springer": None,
+            "off": 0.0, "off_dir": "",
+            "state": "",
+            "parent_town": "",
+            "source": "nps-appa",
+        })
+    return out
+
+
 def main():
     sections = list_sections()
     print(f"sections: {len(sections)}")
@@ -401,6 +473,20 @@ def main():
         out.extend(peaks)
     except Exception as e:
         print(f"  OSM peaks fetch failed (continuing): {e}")
+
+    # Fourth pass: add NPS APPA features (vistas, bridges, parking, privies,
+    # campsites). These augment the wikitrail+OSM data with official sources.
+    print("=== NPS APPA features ===")
+    for kind_name, layer_name in [
+        ("view", "vistas"),
+        ("bridge", "bridges"),
+        ("parking", "parking"),
+        ("privy", "privies"),
+        ("campsite", "campsites"),
+    ]:
+        appa_feats = appa_features_for(kind_name, layer_name)
+        print(f"  {layer_name}: {len(appa_feats)} -> kind={kind_name}")
+        out.extend(appa_feats)
 
     out.sort(key=lambda f: (f["mi_springer"] or 0))
     bundle = {

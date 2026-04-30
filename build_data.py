@@ -36,6 +36,20 @@ CACHE_DIR = Path(__file__).parent / ".cache"
 CACHE_DIR.mkdir(exist_ok=True)
 ELEV_CACHE = CACHE_DIR / "elev.json"
 
+# Official NPS APPA "Features and Facilities" service. Joint NPS + ATC.
+# Updated 2025-04. Public.
+APPA_BASE = "https://services1.arcgis.com/fBc8EJBxQRMcHlei/arcgis/rest/services/ANST_Facilities/FeatureServer"
+APPA_LAYERS = {
+    "bridges": 0,
+    "campsites": 1,
+    "parking": 2,
+    "privies": 3,
+    "shelters": 4,
+    "vistas": 5,
+    "side_trails": 6,
+    "treadway": 7,
+}
+
 # Open-Elevation supports POST batches up to ~1000 points.
 OPEN_ELEV_URL = "https://api.open-elevation.com/api/v1/lookup"
 OPEN_ELEV_BATCH = 500
@@ -220,6 +234,51 @@ out geom;
     return {"elements": (a.get("elements") or []) + (b.get("elements") or [])}
 
 
+def fetch_appa_layer(layer_name: str) -> dict:
+    """Fetch all features from one APPA REST layer as GeoJSON in WGS84.
+    Cached per-layer in .cache/appa_<name>.json. Public service, no auth."""
+    cache = CACHE_DIR / f"appa_{layer_name}.json"
+    if cache.exists():
+        return json.loads(cache.read_text())
+    layer_id = APPA_LAYERS[layer_name]
+    print(f"  fetching APPA layer {layer_name} (id={layer_id})...")
+    out = {"type": "FeatureCollection", "features": []}
+    offset = 0
+    page = 2000
+    while True:
+        params = {
+            "where": "1=1",
+            "outFields": "*",
+            "returnGeometry": "true",
+            "f": "geojson",
+            "outSR": "4326",
+            "resultOffset": str(offset),
+            "resultRecordCount": str(page),
+        }
+        url = f"{APPA_BASE}/{layer_id}/query?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url, headers={"User-Agent": "at-tracker-build/1.0"})
+        for attempt in range(4):
+            try:
+                with urllib.request.urlopen(req, timeout=300) as r:
+                    data = json.loads(r.read())
+                break
+            except Exception as e:
+                print(f"    retry {attempt+1}: {e}")
+                time.sleep(5 * (attempt + 1))
+        else:
+            raise RuntimeError(f"failed to fetch APPA {layer_name}")
+        feats = data.get("features", [])
+        out["features"].extend(feats)
+        if len(feats) < page or data.get("exceededTransferLimit") is False:
+            break
+        offset += len(feats)
+        if offset > 10000:
+            break
+    cache.write_text(json.dumps(out))
+    print(f"    {len(out['features'])} features")
+    return out
+
+
 def hav_km(a, b):
     lat1, lon1 = a[1], a[0]
     lat2, lon2 = b[1], b[0]
@@ -229,6 +288,111 @@ def hav_km(a, b):
     dlam = math.radians(lon2 - lon1)
     h = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlam / 2) ** 2
     return 2 * R * math.asin(math.sqrt(h))
+
+
+def stitch_treadway(treadway_geojson: dict) -> list:
+    """Stitch the 30 NPS-APPA Treadway club features into one ordered
+    south-to-north list of (lon, lat) tuples. Each feature represents one
+    trail-maintaining club's section of the AT.
+
+    Approach:
+      1. For each feature, extract its polyline coordinates (handle
+         LineString and MultiLineString).
+      2. Within a single MultiLineString feature (e.g. PATC across multiple
+         counties), greedily concatenate parts in order.
+      3. Across features, sort by southernmost endpoint's latitude and
+         then chain head-to-tail, flipping each feature as needed to keep
+         continuity.
+    """
+    feats = treadway_geojson.get("features", [])
+    print(f"  stitching {len(feats)} Treadway features")
+    chains = []  # list of {coords: [(lon,lat),...], name: str}
+    for f in feats:
+        geom = f.get("geometry", {})
+        gtype = geom.get("type")
+        coords_raw = geom.get("coordinates", [])
+        if gtype == "LineString":
+            parts = [coords_raw]
+        elif gtype == "MultiLineString":
+            parts = coords_raw
+        else:
+            continue
+        # Stitch parts within this feature
+        if not parts:
+            continue
+        parts = [[(c[0], c[1]) for c in p] for p in parts if len(p) >= 2]
+        if not parts:
+            continue
+        parts.sort(key=lambda p: -len(p))  # longest first
+        chain = list(parts.pop(0))
+        used = [False] * len(parts)
+        while not all(used):
+            head, tail = chain[0], chain[-1]
+            best = None  # (idx, action, dist)
+            for i, p in enumerate(parts):
+                if used[i]:
+                    continue
+                opts = (
+                    ("tail+", hav_km(tail, p[0])),
+                    ("tail-", hav_km(tail, p[-1])),
+                    ("head+", hav_km(head, p[-1])),
+                    ("head-", hav_km(head, p[0])),
+                )
+                for action, d in opts:
+                    if best is None or d < best[2]:
+                        best = (i, action, d)
+            if best is None or best[2] > 0.5:
+                break
+            i, action, _ = best
+            used[i] = True
+            p = parts[i]
+            if action == "tail+":
+                chain.extend(p[1:])
+            elif action == "tail-":
+                chain.extend(reversed(p[:-1]))
+            elif action == "head+":
+                chain = list(reversed(p)) + chain[1:]
+            elif action == "head-":
+                chain = list(p) + chain[1:]
+        # Orient this club's chain south-to-north
+        if chain[0][1] > chain[-1][1]:
+            chain.reverse()
+        name = (f.get("properties") or {}).get("Name", "?")
+        chains.append({"coords": chain, "name": name})
+
+    # Greedy nearest-endpoint stitching: start with the feature whose lowest
+    # endpoint is at the southernmost latitude (Springer Mtn end), then
+    # repeatedly pick the unused feature whose start (or end, with flip)
+    # is closest to the current master's tail. This avoids the failure mode
+    # of latitude-only sorting where a feature's south endpoint is high
+    # but its north endpoint is even higher (e.g. PATC spans 4 latitudes
+    # of width and overlaps several other clubs).
+    if not chains:
+        return []
+    chains.sort(key=lambda c: min(c["coords"][0][1], c["coords"][-1][1]))
+    master_chain = chains.pop(0)
+    master = list(master_chain["coords"])
+    print(f"    seed: {master_chain['name']} ({len(master)} pts)")
+    while chains:
+        tail = master[-1]
+        best_i, best_d, best_action = -1, float("inf"), "forward"
+        for i, c in enumerate(chains):
+            d_head = hav_km(tail, c["coords"][0])
+            d_tail = hav_km(tail, c["coords"][-1])
+            if d_head <= d_tail and d_head < best_d:
+                best_d, best_i, best_action = d_head, i, "forward"
+            elif d_tail < best_d:
+                best_d, best_i, best_action = d_tail, i, "reverse"
+        c = chains.pop(best_i)
+        seg = c["coords"] if best_action == "forward" else list(reversed(c["coords"]))
+        if best_d < 0.001:
+            master.extend(seg[1:])
+        else:
+            master.extend(seg)
+        print(f"    + {c['name']} (gap {best_d*1000:.0f}m)")
+    if master[0][1] > master[-1][1]:
+        master.reverse()
+    return master
 
 
 def ordered_chain(rel_member_way_ids, ways_by_id):
@@ -633,6 +797,215 @@ def road_crossings(road_ways, chains_data):
     return deduped
 
 
+def main_nps():
+    """V3 build pipeline driven by NPS APPA data.
+
+    1. Fetch NPS Treadway centerline (30 club features) and stitch into one
+       ordered list of (lon, lat) coords from Springer to Katahdin.
+    2. Compute cumulative miles along the master line.
+    3. Fetch NPS Shelters (280) and project each onto the master line by
+       nearest-point. Filter to those within 800m of the trail.
+    4. Fetch road crossings via OSM (NPS doesn't have these). Use the bbox
+       of the master line and intersect with the trail.
+    5. Determine each segment's state via cumulative-mile thresholds (we
+       know roughly where state borders fall along the AT).
+    6. Build segments: each consecutive pair of (NPS shelter | road crossing)
+       becomes a segment.
+    7. Compute elevation gain/loss per segment via Open-Elevation.
+    8. Save at_data.json with version=3.
+    """
+    elev_cache = load_elev_cache()
+
+    # 1. Fetch + stitch the NPS Treadway centerline
+    print("=== STEP 1: NPS Treadway centerline ===")
+    treadway = fetch_appa_layer("treadway")
+    master_coords = stitch_treadway(treadway)
+    if not master_coords:
+        raise RuntimeError("failed to build master centerline from NPS Treadway")
+    cum_mi = cumulative_miles(master_coords)
+    total_mi = cum_mi[-1]
+    print(f"master centerline: {len(master_coords)} pts, {total_mi:.1f} mi")
+
+    # 2. Fetch + project NPS shelters
+    print("=== STEP 2: NPS Shelters ===")
+    shelters_geo = fetch_appa_layer("shelters")
+    shelters_on_trail = []
+    for f in shelters_geo.get("features", []):
+        g = f.get("geometry", {})
+        if g.get("type") != "Point":
+            continue
+        lon, lat = g["coordinates"][0], g["coordinates"][1]
+        along, perp_km, snap = nearest_on_line((lon, lat), master_coords, cum_mi)
+        if perp_km > 0.8:  # > 800m off-trail = skip
+            continue
+        props = f.get("properties") or {}
+        name = (props.get("Name") or "").strip()
+        if not name:
+            name = "Unnamed shelter"
+        shelters_on_trail.append({
+            "name": name,
+            "lat": lat, "lon": lon,
+            "mi": along,
+            "perp_km": perp_km,
+            "id": props.get("Acronym") or props.get("OBJECTID"),
+        })
+    shelters_on_trail.sort(key=lambda s: s["mi"])
+    # Dedupe by name+mile
+    deduped = []
+    for s in shelters_on_trail:
+        if deduped and deduped[-1]["name"] == s["name"] and abs(deduped[-1]["mi"] - s["mi"]) < 0.5:
+            continue
+        deduped.append(s)
+    shelters_on_trail = deduped
+    print(f"on-trail shelters: {len(shelters_on_trail)}")
+
+    # 3. Fetch road crossings via OSM bbox query (NPS data lacks roads)
+    print("=== STEP 3: Road crossings (OSM bbox) ===")
+    bbox = (
+        min(c[0] for c in master_coords) - 0.005,
+        min(c[1] for c in master_coords) - 0.005,
+        max(c[0] for c in master_coords) + 0.005,
+        max(c[1] for c in master_coords) + 0.005,
+    )
+    cache_file = CACHE_DIR / "osm_roads_bbox.json"
+    if cache_file.exists():
+        roads_data = json.loads(cache_file.read_text())
+    else:
+        q = (
+            "[out:json][timeout:300]"
+            f"[bbox:{bbox[1]},{bbox[0]},{bbox[3]},{bbox[2]}];"
+            '(way[highway~"^(motorway|trunk|primary|secondary|tertiary)$"][name];'
+            'way[highway~"^(motorway|trunk|primary|secondary|tertiary)$"][ref];);'
+            "out geom;"
+        )
+        try:
+            roads_data = overpass(q)
+            cache_file.write_text(json.dumps(roads_data))
+        except Exception as e:
+            print(f"  road fetch failed (will continue without): {e}")
+            roads_data = {"elements": []}
+    road_ways = [e for e in roads_data.get("elements", []) if e.get("type") == "way" and e.get("geometry")]
+    print(f"  candidate road ways: {len(road_ways)}")
+    crossings = road_crossings(
+        road_ways,
+        [{"coords": master_coords, "cum_mi": cum_mi}],
+    )
+    crossings.sort(key=lambda c: c["along_mi"])
+    # Dedupe by label+mile
+    cross_dedup = []
+    for c in crossings:
+        if cross_dedup and cross_dedup[-1]["label"] == c["label"] and abs(cross_dedup[-1]["along_mi"] - c["along_mi"]) < 0.05:
+            continue
+        cross_dedup.append(c)
+    crossings = cross_dedup
+    print(f"  road crossings on trail: {len(crossings)}")
+
+    # 4. Build the breakpoint list. State end-of-state synthetic markers help
+    #    delimit state transitions in the segmentation.
+    state_borders = [
+        # (end_mile_from_springer, state_we_are_entering)
+        # These thresholds match canonical AT state-mile estimates.
+        (0,    "Georgia"),
+        (78,   "North Carolina"),
+        (165,  "North Carolina"),  # Smokies (NC/TN border) — keep NC
+        (241,  "Tennessee"),
+        (469,  "Virginia"),
+        (998,  "West Virginia"),
+        (1022, "Maryland"),
+        (1063, "Pennsylvania"),
+        (1295, "New Jersey"),
+        (1322, "New York"),
+        (1456, "Connecticut"),
+        (1505, "Massachusetts"),
+        (1595, "Vermont"),
+        (1748, "New Hampshire"),
+        (1903, "Maine"),
+    ]
+    def state_at(mi):
+        last = "Georgia"
+        for thresh, st in state_borders:
+            if mi >= thresh:
+                last = st
+        return last
+    # Add synthetic state-border breakpoints at each state transition
+    breakpoints = [{"name": "Springer Mountain (Trail Start)", "mi": 0.0, "kind": "border"}]
+    for s in shelters_on_trail:
+        breakpoints.append({"name": s["name"], "mi": s["mi"], "kind": "shelter", "lat": s["lat"], "lon": s["lon"]})
+    for c in crossings:
+        breakpoints.append({"name": c["label"], "mi": c["along_mi"], "kind": "crossing", "lat": c["lat"], "lon": c["lon"]})
+    for thresh, st in state_borders[1:]:
+        breakpoints.append({"name": f"{state_borders[state_borders.index((thresh, st)) - 1][1]} / {st} state line", "mi": thresh, "kind": "state-line"})
+    breakpoints.append({"name": "Mount Katahdin (Trail End)", "mi": total_mi, "kind": "border"})
+    breakpoints.sort(key=lambda b: b["mi"])
+    # Collapse same-mile breakpoints
+    collapsed = []
+    for b in breakpoints:
+        if collapsed and abs(collapsed[-1]["mi"] - b["mi"]) < 0.05:
+            if b["name"] != collapsed[-1]["name"]:
+                collapsed[-1] = {**collapsed[-1], "name": f"{collapsed[-1]['name']} / {b['name']}", "kind": "combined"}
+            continue
+        collapsed.append(b)
+    breakpoints = collapsed
+    print(f"=== STEP 4: {len(breakpoints)} breakpoints ===")
+
+    # 5. Build segments + compute elevation
+    print("=== STEP 5: Segments + elevation ===")
+    out_segments = []
+    out_shelters = [{"name": s["name"], "lat": s["lat"], "lon": s["lon"], "state": state_at(s["mi"])} for s in shelters_on_trail]
+    out_crossings = [{"label": c["label"], "lat": c["lat"], "lon": c["lon"], "state": state_at(c["along_mi"])} for c in crossings]
+    seg_id = 0
+    for i in range(len(breakpoints) - 1):
+        a = breakpoints[i]
+        b = breakpoints[i + 1]
+        if b["mi"] - a["mi"] < 0.05:
+            continue
+        sub = slice_along(master_coords, cum_mi, a["mi"], b["mi"])
+        sub = simplify(sub, tol_deg=0.00015)
+        elevs_m = fetch_elevations(sub, elev_cache)
+        gain_m, loss_m = smooth_and_compute_gain_loss(elevs_m)
+        ft_per_m = 3.28084
+        # State assigned by the segment's midpoint mile
+        mid_mi = (a["mi"] + b["mi"]) / 2.0
+        out_segments.append({
+            "id": seg_id,
+            "state": state_at(mid_mi),
+            "from": a["name"],
+            "to": b["name"],
+            "miles": round(b["mi"] - a["mi"], 2),
+            "elev_gain": round(gain_m * ft_per_m, 1),
+            "elev_loss": round(loss_m * ft_per_m, 1),
+            "geom": [[round(c[0], 5), round(c[1], 5)] for c in sub],
+        })
+        seg_id += 1
+    print(f"segments built: {len(out_segments)}")
+
+    # 6. Build state list with cumulative miles per state
+    state_miles = {}
+    state_order_idx = {st: i for i, (_, st) in enumerate(state_borders)}
+    for s in out_segments:
+        state_miles[s["state"]] = state_miles.get(s["state"], 0) + s["miles"]
+    out_states = []
+    for st_name, mi in state_miles.items():
+        out_states.append({"name": st_name, "order": state_order_idx.get(st_name, 99), "miles": round(mi, 1)})
+    out_states.sort(key=lambda s: s["order"])
+
+    bundle = {
+        "version": 3,
+        "generated": time.strftime("%Y-%m-%d"),
+        "source": "NPS APPA Features and Facilities (joint NPS + ATC)",
+        "states": out_states,
+        "segments": out_segments,
+        "shelters": out_shelters,
+        "crossings": out_crossings,
+    }
+    OUT_PATH.write_text(json.dumps(bundle, separators=(",", ":")))
+    total = sum(s["miles"] for s in out_segments)
+    print(f"\n=== DONE ===")
+    print(f"wrote {OUT_PATH} - {OUT_PATH.stat().st_size//1024} KB")
+    print(f"states={len(out_states)} segments={len(out_segments)} shelters={len(out_shelters)} crossings={len(out_crossings)}")
+    print(f"total mileage: {total:.1f} mi")
+
+
 def main():
     all_states = []
     elev_cache = load_elev_cache()
@@ -860,4 +1233,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if "--legacy-osm" in sys.argv:
+        main()
+    else:
+        main_nps()
