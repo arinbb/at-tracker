@@ -1454,6 +1454,11 @@
       }
       html.push(`</div>`);
     }
+    // Defined here so they're in scope for the post-render initial itinerary
+    // calculation below (outside the `else` block).
+    const startDate = prefs.tripStartDate || todayISO();
+    const zeroFreq = prefs.zeroDayFreq != null ? prefs.zeroDayFreq : 0;
+
     if (plannedSegs.length === 0) {
       html.push(`<div class="empty">No planned segments yet. Click the flag icon next to any unhiked section to mark it as your next planned hike.</div>`);
     } else {
@@ -1477,8 +1482,6 @@
       html.push(grid(statsRows));
 
       // Pace + estimated trip days. Live-recomputes when user changes pace.
-      const startDate = prefs.tripStartDate || todayISO();
-      const zeroFreq = prefs.zeroDayFreq != null ? prefs.zeroDayFreq : 0;
       html.push(`<div class="pace-row">` +
         `<label>Pace: <input type="number" id="pace-input" min="1" max="40" step="0.5" value="${pace}" /> mi/day</label>` +
         `<label style="margin-left:6px;">Start: <input type="date" id="trip-start" value="${escapeHtml(startDate)}" /></label>` +
