@@ -467,6 +467,64 @@
   }
 
   // -------- Render sidebar --------
+  // Hand-curated AT viewpoints to fill OSM coverage gaps. OSM under-tags
+  // viewpoints in SW VA / Roan / Smokies / S-VA where some of the trail's
+  // most iconic vistas live. These coordinates are well-known and within
+  // ~500m of the named feature; many are also tagged as natural=peak in
+  // OSM but never as tourism=viewpoint.
+  const CURATED_VIEWS = [
+    // Southern VA (Roanoke / Lynchburg area)
+    { id: "v_mcafee_knob",     name: "McAfee Knob",            kind: "view", lat: 37.3759, lon: -80.0830, elev_m: 974 },
+    { id: "v_tinker_cliffs",   name: "Tinker Cliffs",          kind: "view", lat: 37.4119, lon: -80.0317, elev_m: 982 },
+    { id: "v_dragons_tooth",   name: "Dragon's Tooth",         kind: "view", lat: 37.3922, lon: -80.1547, elev_m: 950 },
+    { id: "v_apple_orchard",   name: "Apple Orchard Mountain", kind: "view", lat: 37.5083, lon: -79.5097, elev_m: 1283 },
+    { id: "v_priest",          name: "The Priest",             kind: "view", lat: 37.7481, lon: -79.0833, elev_m: 1280 },
+    { id: "v_three_ridges",    name: "Three Ridges",           kind: "view", lat: 37.8189, lon: -79.0061, elev_m: 1233 },
+    { id: "v_spy_rock",        name: "Spy Rock",               kind: "view", lat: 37.7642, lon: -79.1394, elev_m: 1230 },
+    { id: "v_cole_mountain",   name: "Cole Mountain (Cold Mountain bald)", kind: "view", lat: 37.6953, lon: -79.2319, elev_m: 1234 },
+    { id: "v_tar_jacket",      name: "Tar Jacket Ridge",       kind: "view", lat: 37.6814, lon: -79.2436, elev_m: 1175 },
+    { id: "v_punchbowl",       name: "Punchbowl Mountain",     kind: "view", lat: 37.5867, lon: -79.4406, elev_m: 793 },
+
+    // Mt. Rogers / Grayson Highlands (SW VA)
+    { id: "v_mt_rogers",       name: "Mount Rogers summit",    kind: "view", lat: 36.6597, lon: -81.5454, elev_m: 1746 },
+    { id: "v_whitetop",        name: "Whitetop Mountain",      kind: "view", lat: 36.6361, lon: -81.5944, elev_m: 1684 },
+    { id: "v_wilburn_ridge",   name: "Wilburn Ridge",          kind: "view", lat: 36.6489, lon: -81.5181, elev_m: 1646 },
+    { id: "v_the_scales",      name: "The Scales",             kind: "view", lat: 36.6622, lon: -81.5167, elev_m: 1418 },
+    { id: "v_pine_mtn_va",     name: "Pine Mountain (VA)",     kind: "view", lat: 36.6856, lon: -81.5050, elev_m: 1582 },
+
+    // Roan Highlands (NC/TN border)
+    { id: "v_roan_high_knob",  name: "Roan High Knob",         kind: "view", lat: 36.1051, lon: -82.1116, elev_m: 1916 },
+    { id: "v_roan_high_bluff", name: "Roan High Bluff",        kind: "view", lat: 36.1167, lon: -82.1333, elev_m: 1908 },
+    { id: "v_round_bald",      name: "Round Bald",             kind: "view", lat: 36.1083, lon: -82.1006, elev_m: 1733 },
+    { id: "v_jane_bald",       name: "Jane Bald",              kind: "view", lat: 36.1133, lon: -82.0853, elev_m: 1786 },
+    { id: "v_grassy_ridge",    name: "Grassy Ridge Bald",      kind: "view", lat: 36.1267, lon: -82.0700, elev_m: 1899 },
+    { id: "v_hump_mtn",        name: "Hump Mountain",          kind: "view", lat: 36.1561, lon: -82.0033, elev_m: 1605 },
+    { id: "v_little_hump",     name: "Little Hump Mountain",   kind: "view", lat: 36.1392, lon: -82.0250, elev_m: 1551 },
+    { id: "v_yellow_mtn",      name: "Yellow Mountain Gap",    kind: "view", lat: 36.1278, lon: -82.0494, elev_m: 1460 },
+
+    // NC ridges + Smokies
+    { id: "v_beauty_spot",     name: "Beauty Spot",            kind: "view", lat: 36.0733, lon: -82.4517, elev_m: 1311 },
+    { id: "v_big_bald",        name: "Big Bald",               kind: "view", lat: 36.0067, lon: -82.5453, elev_m: 1681 },
+    { id: "v_camp_creek_bald", name: "Camp Creek Bald",        kind: "view", lat: 35.9789, lon: -82.7150, elev_m: 1456 },
+    { id: "v_big_firescald",   name: "Big Firescald Knob",     kind: "view", lat: 35.9711, lon: -82.7592, elev_m: 1374 },
+    { id: "v_max_patch",       name: "Max Patch",              kind: "view", lat: 35.7956, lon: -82.9622, elev_m: 1411 },
+    { id: "v_mt_cammerer",     name: "Mount Cammerer",         kind: "view", lat: 35.7714, lon: -83.1567, elev_m: 1564 },
+    { id: "v_charlies_bunion", name: "Charlies Bunion",        kind: "view", lat: 35.6492, lon: -83.3717, elev_m: 1814 },
+    { id: "v_clingmans_dome",  name: "Clingmans Dome",         kind: "view", lat: 35.5630, lon: -83.4985, elev_m: 2025 },
+    { id: "v_silers_bald",     name: "Silers Bald",            kind: "view", lat: 35.5600, lon: -83.5742, elev_m: 1716 },
+    { id: "v_rocky_top",       name: "Rocky Top",              kind: "view", lat: 35.5800, lon: -83.7547, elev_m: 1605 },
+    { id: "v_spence_field",    name: "Spence Field",           kind: "view", lat: 35.5483, lon: -83.7233, elev_m: 1542 },
+  ];
+  // Mark all curated entries with shared metadata
+  CURATED_VIEWS.forEach((f) => {
+    f.slug = "";
+    f.off = 0;
+    f.off_dir = "";
+    f.state = "";
+    f.parent_town = "";
+    f.source = "curated";
+  });
+
   // Wikimedia stable-redirect URLs for each US state's flag, scaled to 40px.
   // Special:FilePath redirects to the current thumbnail without needing the
   // unpredictable file hash. Combined states get two flags side by side.
@@ -3019,6 +3077,11 @@
       const fr = await fetch("at_features.json", { cache: "no-cache" });
       if (fr.ok) {
         FEATURES = await fr.json();
+        // Append hand-curated viewpoints that fill OSM coverage gaps
+        // (especially the SW VA / Roan / Smokies stretch).
+        if (Array.isArray(FEATURES.features) && Array.isArray(CURATED_VIEWS)) {
+          FEATURES.features.push(...CURATED_VIEWS);
+        }
         matchFeaturesToSegments();
         buildFeatureLayers();
       }
