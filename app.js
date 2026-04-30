@@ -467,6 +467,32 @@
   }
 
   // -------- Render sidebar --------
+  // Wikimedia stable-redirect URLs for each US state's flag, scaled to 40px.
+  // Special:FilePath redirects to the current thumbnail without needing the
+  // unpredictable file hash. Combined states get two flags side by side.
+  const FLAG_URL = (filename) =>
+    `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(filename)}?width=40`;
+  const STATE_FLAGS = {
+    "Georgia": ["Flag of Georgia (U.S. state).svg"],
+    "North Carolina/Tennessee": ["Flag of North Carolina.svg", "Flag of Tennessee.svg"],
+    "Virginia": ["Flag of Virginia.svg"],
+    "West Virginia": ["Flag of West Virginia.svg"],
+    "Maryland": ["Flag of Maryland.svg"],
+    "Pennsylvania": ["Flag of Pennsylvania.svg"],
+    "New Jersey/New York": ["Flag of New Jersey.svg", "Flag of New York.svg"],
+    "Connecticut": ["Flag of Connecticut.svg"],
+    "Massachusetts": ["Flag of Massachusetts.svg"],
+    "Vermont": ["Flag of Vermont.svg"],
+    "New Hampshire": ["Flag of New Hampshire.svg"],
+    "Maine": ["Flag of Maine.svg"],
+  };
+  function stateFlagsHTML(stateName) {
+    const flags = STATE_FLAGS[stateName];
+    if (!flags) return "";
+    return `<span class="state-flags">${flags.map((f) =>
+      `<img class="state-flag" src="${FLAG_URL(f)}" alt="" loading="lazy" />`
+    ).join("")}</span>`;
+  }
   function escapeHtml(s) {
     return String(s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;")
@@ -898,6 +924,7 @@
       html.push(`<section class="state${collapsedClass}" data-state="${escapeHtml(st.name)}">`);
       html.push(`<header class="state-header">`);
       html.push(`<svg class="caret" viewBox="0 0 12 12" fill="currentColor"><path d="M3 4.5l3 3 3-3"/></svg>`);
+      html.push(stateFlagsHTML(st.name));
       html.push(`<span>${escapeHtml(st.name)}</span>`);
       html.push(`<span class="state-stats"><span class="done">${hikedCount}</span>/${segs.length} · ${hikedMi.toFixed(1)}/${totalStateMi.toFixed(1)} mi</span>`);
       html.push(`</header>`);
@@ -1817,6 +1844,104 @@
       (zeroDays > 0 ? ` + ${zeroDays} zero day${zeroDays === 1 ? "" : "s"} = ${totalDays} total` : "") +
       `</div>`;
     return summary + rows.join("");
+  }
+  // Print just the planned modal: temporarily set a body class that the
+  // CSS uses to hide everything else, fire window.print(), restore.
+  function printPlannedView() {
+    document.body.classList.add("print-plan");
+    // Need the modal to be visible during print
+    $("planned-modal").classList.add("show");
+    // Most browsers fire print() synchronously; afterprint event lets us cleanup
+    const cleanup = () => {
+      document.body.classList.remove("print-plan");
+      window.removeEventListener("afterprint", cleanup);
+    };
+    window.addEventListener("afterprint", cleanup);
+    setTimeout(() => window.print(), 50);
+  }
+  // Build a plain-text summary of the active trip suitable for messaging apps.
+  function planTextSummary(plannedSegs, itinerary) {
+    const t = getActiveTrip();
+    const totalMi = plannedSegs.reduce((a, s) => a + s.miles, 0);
+    const gain = plannedSegs.reduce((a, s) => a + (s.elev_gain || 0), 0);
+    const loss = plannedSegs.reduce((a, s) => a + (s.elev_loss || 0), 0);
+    const ftPerMi = totalMi > 0 ? (gain + loss) / totalMi : 0;
+    const stress = stressLevel(ftPerMi);
+    const hikeDays = itinerary.filter((d) => d.kind === "hike").length;
+    const zeroDays = itinerary.filter((d) => d.kind === "zero").length;
+    const states = [...new Set(plannedSegs.map((s) => s.state))].join(", ");
+    const lines = [];
+    lines.push(`🥾 ${t ? t.name : "AT planned hike"}`);
+    lines.push(`${totalMi.toFixed(1)} mi · ${hikeDays} hike day${hikeDays === 1 ? "" : "s"}` +
+      (zeroDays > 0 ? ` + ${zeroDays} zero day${zeroDays === 1 ? "" : "s"}` : "") +
+      ` · ${states}`);
+    lines.push(`+${Math.round(gain).toLocaleString()} / −${Math.round(loss).toLocaleString()} ft (${stress.grade.toFixed(1)}/10 ${stress.label})`);
+    if (itinerary.length > 0) {
+      lines.push("");
+      let n = 0;
+      for (const d of itinerary) {
+        if (d.kind === "zero") {
+          lines.push(`  ${d.date}  Zero day · rest`);
+        } else {
+          n++;
+          lines.push(`  ${d.date}  Day ${n}: ${d.from} → ${d.to}  ${d.miles.toFixed(1)} mi · +${Math.round(d.gain)}/−${Math.round(d.loss)} ft`);
+        }
+      }
+    }
+    return lines.join("\n");
+  }
+  // URL that opens the app with this trip pre-loaded as planned segments.
+  function planShareURL() {
+    const t = getActiveTrip();
+    const planCode = encodePlanned(planned);
+    const params = new URLSearchParams();
+    if (planCode) params.set("pl", planCode);
+    if (t) {
+      params.set("plan_name", t.name);
+    }
+    if (prefs.tripStartDate) params.set("plan_start", prefs.tripStartDate);
+    if (prefs.pace) params.set("plan_pace", String(prefs.pace));
+    if (prefs.zeroDayFreq) params.set("plan_zero", String(prefs.zeroDayFreq));
+    return `${location.origin}${location.pathname}#${params.toString()}`;
+  }
+  function openSharePlan() {
+    const plannedSegs = [...planned]
+      .filter((id) => !progress.has(id))
+      .map((id) => segIndex.get(id))
+      .filter(Boolean)
+      .sort((a, b) => a.id - b.id);
+    if (plannedSegs.length === 0) { alert("No planned segments to share."); return; }
+    const pace = Math.max(1, Math.min(50, Number(prefs.pace) || 12));
+    const startDate = prefs.tripStartDate || todayISO();
+    const zeroFreq = Math.max(0, Math.min(14, Number(prefs.zeroDayFreq) || 0));
+    const itinerary = buildItinerary(plannedSegs, pace, startDate, zeroFreq);
+    $("share-plan-url").value = planShareURL();
+    $("share-plan-text").value = planTextSummary(plannedSegs, itinerary);
+    $("share-plan-modal").classList.add("show");
+  }
+  // Apply ?plan_name=... &plan_start=... &plan_pace=... from URL hash on load.
+  // pl=... is already handled by loadPlannedForActive.
+  function applyURLPlanMeta() {
+    const params = new URLSearchParams(location.hash.replace(/^#/, ""));
+    const planName = params.get("plan_name");
+    const planStart = params.get("plan_start");
+    const planPace = params.get("plan_pace");
+    const planZero = params.get("plan_zero");
+    if (!planName && !planStart && !planPace && !planZero) return;
+    if (planStart) prefs.tripStartDate = planStart;
+    if (planPace) prefs.pace = Math.max(1, Math.min(50, Number(planPace) || 12));
+    if (planZero) prefs.zeroDayFreq = Math.max(0, Math.min(14, Number(planZero) || 0));
+    savePrefs();
+    if (planName && planned.size > 0) {
+      // Save as a new trip
+      const existing = trips.find((x) => x.name === planName);
+      if (!existing) {
+        const t = { id: "trip-" + Date.now(), name: planName, createdAt: Date.now(), segs: [...planned] };
+        trips.push(t);
+        activeTripId = t.id;
+        saveTrips();
+      }
+    }
   }
   function clearAllPlanned() {
     if (planned.size === 0) return;
@@ -2846,6 +2971,8 @@
       }
     }
     prefs = loadPrefs();
+    // Apply any plan_*=… params in the URL hash (from a "Share plan" link)
+    applyURLPlanMeta();
 
     directionEl.value = prefs.direction;
     viewModeEl.value = prefs.viewMode || "state";
@@ -2931,6 +3058,28 @@
     $("planned-close").addEventListener("click", () => $("planned-modal").classList.remove("show"));
     $("planned-clear").addEventListener("click", clearAllPlanned);
     $("planned-mark-hiked").addEventListener("click", markPlannedAsHiked);
+    $("planned-print")?.addEventListener("click", printPlannedView);
+    $("planned-share")?.addEventListener("click", openSharePlan);
+    $("planned-export-kml")?.addEventListener("click", exportKML);
+    $("share-plan-close")?.addEventListener("click", () => $("share-plan-modal").classList.remove("show"));
+    $("share-plan-copy-url")?.addEventListener("click", () => {
+      const inp = $("share-plan-url");
+      inp.select();
+      navigator.clipboard.writeText(inp.value).catch(() => document.execCommand("copy"));
+      const btn = $("share-plan-copy-url");
+      const orig = btn.textContent;
+      btn.textContent = "Copied!";
+      setTimeout(() => (btn.textContent = orig), 1200);
+    });
+    $("share-plan-copy-text")?.addEventListener("click", () => {
+      const ta = $("share-plan-text");
+      ta.select();
+      navigator.clipboard.writeText(ta.value).catch(() => document.execCommand("copy"));
+      const btn = $("share-plan-copy-text");
+      const orig = btn.textContent;
+      btn.textContent = "Copied!";
+      setTimeout(() => (btn.textContent = orig), 1200);
+    });
     $("theme-btn").addEventListener("click", toggleTheme);
 
     // Auto-update theme if user has system pref and we're following it

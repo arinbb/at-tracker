@@ -147,6 +147,16 @@
     user-select: none;
   }
   .state-header .caret { width: 12px; transition: transform .15s ease; color: var(--muted); }
+  .state-header .state-flags { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; }
+  .state-header .state-flag {
+    display: inline-block;
+    height: 13px;
+    width: auto;
+    border: 1px solid var(--rule);
+    border-radius: 1px;
+    vertical-align: middle;
+    background: white;
+  }
   .state.collapsed .caret { transform: rotate(-90deg); }
   .state.collapsed .state-body { display: none; }
   .state-header .state-stats { margin-left: auto; font-size: 12px; color: var(--muted); font-weight: 500; }
@@ -421,7 +431,7 @@
   .chunk.collapsed .chunk-body { display: none; }
   .chunk-header .chunk-stats { margin-left: auto; font-variant-numeric: tabular-nums; }
 
-  /* Print view */
+  /* Print view (default: trail journal of hiked sections) */
   @media print {
     header, .filter-bar, #map, .map-legend, .actions, .leaflet-container,
     .modal-bg, .progress-bar { display: none !important; }
@@ -444,6 +454,39 @@
       border-bottom: 2px solid #333;
       margin-bottom: 12px;
     }
+  }
+
+  /* Print PLANNED view: only the planned modal + only key sections */
+  @media print {
+    body.print-plan #sidebar,
+    body.print-plan #map,
+    body.print-plan header,
+    body.print-plan .map-legend { display: none !important; }
+    body.print-plan { background: white; color: black; }
+    body.print-plan body::before { display: none; }
+    body.print-plan #planned-modal {
+      position: static !important;
+      display: block !important;
+      background: white !important;
+      padding: 0 !important;
+      overflow: visible !important;
+    }
+    body.print-plan #planned-modal .modal {
+      position: static;
+      box-shadow: none;
+      max-width: none;
+      width: auto;
+      margin: 0;
+      padding: 0;
+      background: white;
+    }
+    body.print-plan #planned-modal .modal-actions { display: none !important; }
+    body.print-plan #planned-modal .trip-control button { display: none; }
+    /* Keep maps/charts visible in plan print */
+    body.print-plan .diff-bar-row, body.print-plan .diff-chart { display: block !important; }
+    body.print-plan h2 { font-size: 18px; }
+    body.print-plan h3 { font-size: 13px; margin-top: 12px; }
+    body.print-plan .iti-row, body.print-plan .seg-line { page-break-inside: avoid; }
   }
 
   @media (max-width: 760px) {
@@ -576,6 +619,21 @@
   </div>
 </div>
 
+<div class="modal-bg" id="share-plan-modal">
+  <div class="modal" style="max-width: 600px;">
+    <h2>Share planned trip</h2>
+    <p>Anyone with this URL can open the app and load this exact trip.</p>
+    <input type="text" id="share-plan-url" readonly />
+    <p style="margin-top: 12px;"><strong>Plain-text summary</strong> (paste into messages, email…):</p>
+    <textarea id="share-plan-text" readonly style="min-height: 200px; font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 11px;"></textarea>
+    <div class="modal-actions">
+      <button id="share-plan-copy-url">Copy URL</button>
+      <button id="share-plan-copy-text">Copy summary</button>
+      <button id="share-plan-close" class="primary">Close</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-bg" id="bulk-date-modal">
   <div class="modal">
     <h2>Set date for range</h2>
@@ -656,7 +714,10 @@
   <div class="modal" style="max-width: 640px;">
     <h2>Next planned hike — <span id="planned-profile-name"></span></h2>
     <div id="planned-body" style="font-size: 13px;"></div>
-    <div class="modal-actions">
+    <div class="modal-actions" style="flex-wrap: wrap;">
+      <button id="planned-print">Print plan</button>
+      <button id="planned-share">Share plan</button>
+      <button id="planned-export-kml" title="Just this trip's planned segments">KML</button>
       <button id="planned-clear">Clear all planned</button>
       <button id="planned-mark-hiked">Mark all as hiked…</button>
       <button id="planned-close" class="primary">Close</button>
@@ -837,6 +898,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=26"></script>
+<script src="app.js?v=27"></script>
 </body>
 </html>
