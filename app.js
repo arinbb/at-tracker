@@ -2381,6 +2381,157 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  // -------- KML export (Google Earth) --------
+  function kmlEscape(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  // Color: KML uses aabbggrr (alpha-blue-green-red), so we have to flip
+  // an rrggbb input. alpha is the byte that controls opacity, ff = fully opaque.
+  function rgbToKml(rgb, alpha) {
+    const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(rgb);
+    if (!m) return "ff007d2a";
+    return `${alpha || "ff"}${m[3].toLowerCase()}${m[2].toLowerCase()}${m[1].toLowerCase()}`;
+  }
+  function exportKML() {
+    const hikedSegs = [...progress.keys()].map((id) => segIndex.get(id)).filter(Boolean).sort((a, b) => a.id - b.id);
+    const plannedOnly = [...planned].filter((id) => !progress.has(id)).map((id) => segIndex.get(id)).filter(Boolean).sort((a, b) => a.id - b.id);
+    if (hikedSegs.length === 0 && plannedOnly.length === 0) {
+      alert("Nothing to export — mark some segments as hiked or planned first.");
+      return;
+    }
+    const lines = [];
+    lines.push('<?xml version="1.0" encoding="UTF-8"?>');
+    lines.push('<kml xmlns="http://www.opengis.net/kml/2.2">');
+    lines.push(`  <Document>`);
+    lines.push(`    <name>AT Section Tracker — ${kmlEscape(activeProfile)}</name>`);
+    lines.push(`    <description>Hiked + planned Appalachian Trail sections, exported ${new Date().toISOString().slice(0, 10)}.</description>`);
+    // Styles
+    lines.push(`    <Style id="hiked"><LineStyle><color>${rgbToKml("#2a7d3a")}</color><width>5</width></LineStyle></Style>`);
+    lines.push(`    <Style id="planned"><LineStyle><color>${rgbToKml("#1a5fb4")}</color><width>4</width></LineStyle></Style>`);
+    lines.push(`    <Style id="trail"><LineStyle><color>${rgbToKml("#7a4f3a", "80")}</color><width>2</width></LineStyle></Style>`);
+    lines.push(`    <Style id="shelter"><IconStyle><Icon><href>https://maps.google.com/mapfiles/kml/shapes/triangle.png</href></Icon><scale>0.7</scale></IconStyle></Style>`);
+    lines.push(`    <Style id="peak"><IconStyle><Icon><href>https://maps.google.com/mapfiles/kml/shapes/mountain.png</href></Icon><scale>0.8</scale></IconStyle></Style>`);
+    lines.push(`    <Style id="town"><IconStyle><Icon><href>https://maps.google.com/mapfiles/kml/paddle/wht-circle.png</href></Icon><scale>0.7</scale></IconStyle></Style>`);
+
+    // Hiked folder
+    if (hikedSegs.length > 0) {
+      lines.push(`    <Folder><name>Hiked sections (${hikedSegs.length})</name>`);
+      let cumMi = 0;
+      for (const seg of hikedSegs) {
+        cumMi += seg.miles;
+        const date = progress.get(seg.id) || "";
+        const note = notes.get(seg.id) || "";
+        const desc = `${seg.state} · ${seg.miles.toFixed(2)} mi (cum ${cumMi.toFixed(1)})` +
+          (date ? ` · hiked ${date}` : "") +
+          (typeof seg.elev_gain === "number" ? ` · +${Math.round(seg.elev_gain)}/−${Math.round(seg.elev_loss)} ft` : "") +
+          (note ? `\n${note}` : "");
+        const coords = seg.geom.map(([lon, lat]) => `${lon},${lat},0`).join(" ");
+        lines.push(`      <Placemark>`);
+        lines.push(`        <name>${kmlEscape(seg.from)} → ${kmlEscape(seg.to)}</name>`);
+        lines.push(`        <description>${kmlEscape(desc)}</description>`);
+        lines.push(`        <styleUrl>#hiked</styleUrl>`);
+        lines.push(`        <LineString><tessellate>1</tessellate><coordinates>${coords}</coordinates></LineString>`);
+        lines.push(`      </Placemark>`);
+      }
+      lines.push(`    </Folder>`);
+    }
+
+    // Planned folder
+    if (plannedOnly.length > 0) {
+      lines.push(`    <Folder><name>Planned sections (${plannedOnly.length})</name>`);
+      const t = getActiveTrip();
+      if (t) lines.push(`      <description>From trip "${kmlEscape(t.name)}"</description>`);
+      for (const seg of plannedOnly) {
+        const desc = `${seg.state} · ${seg.miles.toFixed(2)} mi` +
+          (typeof seg.elev_gain === "number" ? ` · +${Math.round(seg.elev_gain)}/−${Math.round(seg.elev_loss)} ft` : "");
+        const coords = seg.geom.map(([lon, lat]) => `${lon},${lat},0`).join(" ");
+        lines.push(`      <Placemark>`);
+        lines.push(`        <name>${kmlEscape(seg.from)} → ${kmlEscape(seg.to)}</name>`);
+        lines.push(`        <description>${kmlEscape(desc)}</description>`);
+        lines.push(`        <styleUrl>#planned</styleUrl>`);
+        lines.push(`        <LineString><tessellate>1</tessellate><coordinates>${coords}</coordinates></LineString>`);
+      lines.push(`      </Placemark>`);
+      }
+      lines.push(`    </Folder>`);
+    }
+
+    // Shelters / peaks / towns relevant to the route — only if planned or hiked is non-empty
+    const allSegIds = new Set([...hikedSegs.map((s) => s.id), ...plannedOnly.map((s) => s.id)]);
+    const relevantFeatures = [];
+    if (FEATURES) {
+      for (const segId of allSegIds) {
+        const fs = segFeatures.get(segId);
+        if (fs) for (const f of fs) relevantFeatures.push(f);
+      }
+    }
+    const seenFeatIds = new Set();
+    const shelterPlacemarks = [];
+    const peakPlacemarks = [];
+    const townPlacemarks = [];
+    // Shelters from segment endpoints (always include if we have hiked/planned segs at that point)
+    for (const seg of [...hikedSegs, ...plannedOnly]) {
+      const checkName = (n) => {
+        if (/shelter|lean.?to|cabin|hut/i.test(n)) {
+          const key = `shelter:${n}`;
+          if (!seenFeatIds.has(key)) {
+            seenFeatIds.add(key);
+            // Find lat/lon: search in DATA.shelters
+            const sh = (DATA.shelters || []).find((x) => x.name === n);
+            if (sh) {
+              shelterPlacemarks.push({ name: n, lat: sh.lat, lon: sh.lon, state: sh.state });
+            }
+          }
+        }
+      };
+      checkName(seg.from);
+      checkName(seg.to);
+    }
+    // Wikitrail features (peaks, towns)
+    for (const f of relevantFeatures) {
+      if (!f.lat || !f.lon) continue;
+      const key = `f:${f.id}`;
+      if (seenFeatIds.has(key)) continue;
+      seenFeatIds.add(key);
+      if (f.kind === "peak") peakPlacemarks.push(f);
+      else if (f.kind === "town") townPlacemarks.push(f);
+    }
+    if (shelterPlacemarks.length > 0) {
+      lines.push(`    <Folder><name>Shelters on route (${shelterPlacemarks.length})</name>`);
+      for (const s of shelterPlacemarks) {
+        lines.push(`      <Placemark><name>${kmlEscape(s.name)}</name><description>${kmlEscape(s.state || "")}</description><styleUrl>#shelter</styleUrl><Point><coordinates>${s.lon},${s.lat},0</coordinates></Point></Placemark>`);
+      }
+      lines.push(`    </Folder>`);
+    }
+    if (peakPlacemarks.length > 0) {
+      lines.push(`    <Folder><name>Peaks on route (${peakPlacemarks.length})</name>`);
+      for (const p of peakPlacemarks) {
+        const elev = typeof p.elev_m === "number" ? `${Math.round(p.elev_m * 3.28084)} ft` : "";
+        lines.push(`      <Placemark><name>${kmlEscape(p.name)}</name><description>${kmlEscape(elev)}</description><styleUrl>#peak</styleUrl><Point><coordinates>${p.lon},${p.lat},0</coordinates></Point></Placemark>`);
+      }
+      lines.push(`    </Folder>`);
+    }
+    if (townPlacemarks.length > 0) {
+      lines.push(`    <Folder><name>Towns on route (${townPlacemarks.length})</name>`);
+      for (const tn of townPlacemarks) {
+        lines.push(`      <Placemark><name>${kmlEscape(tn.name)}</name><description>${kmlEscape(tn.state || "")}</description><styleUrl>#town</styleUrl><Point><coordinates>${tn.lon},${tn.lat},0</coordinates></Point></Placemark>`);
+      }
+      lines.push(`    </Folder>`);
+    }
+
+    lines.push(`  </Document>`);
+    lines.push(`</kml>`);
+
+    const blob = new Blob([lines.join("\n")], { type: "application/vnd.google-earth.kml+xml" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `at-tracker-${activeProfile.replace(/[^a-z0-9]+/gi, "_")}-${todayISO()}.kml`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
   // -------- GPX import --------
   function openGpxImport() {
     $("gpx-file").value = "";
@@ -2633,6 +2784,7 @@
 
     $("gpx-export-btn").addEventListener("click", exportGPX);
     $("gpx-import-btn").addEventListener("click", openGpxImport);
+    $("kml-export-btn")?.addEventListener("click", exportKML);
     $("gpx-import-cancel").addEventListener("click", () => $("gpx-import-modal").classList.remove("show"));
     $("gpx-import-go").addEventListener("click", doGpxImport);
 
