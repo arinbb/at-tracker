@@ -1061,26 +1061,59 @@ def _nearest_in_grid(query, points, grid, cell_deg=0.005, search_radius=2):
 
 
 def _snap_kmz_to_nps(kmz_master, nps_master, threshold_m=100):
-    """Snap each KMZ master point to the nearest NPS point if within threshold.
+    """Build a hybrid polyline with KMZ structure + full NPS detail.
 
-    Result: a hybrid polyline that follows the KMZ structure but uses NPS
-    coordinates wherever the two datasets agree on the trail location.
-    Where NPS data is missing (e.g. Daleville gap) the KMZ point is kept.
+    Each KMZ vertex is snapped to the nearest NPS point (within threshold).
+    For every consecutive pair of KMZ vertices that BOTH snap to NPS, the
+    NPS polyline between their snap indices is spliced in. This recovers
+    the per-switchback wiggle that NPS GIS has but KMZ omits — and is the
+    difference between 1972 mi and ~2194 mi total.
+
+    Sanity guard: only splice NPS interior when the NPS path between the
+    two snap indices isn't wildly longer than the KMZ straight-line — a
+    hard cap of 5× plus a 500m floor, so we don't pick up loops or
+    accidental backtracks in the NPS stitch.
+
+    Where a KMZ vertex doesn't snap (NPS gap region), the KMZ point is
+    kept as-is and no interior is inserted.
+
+    Returns (master_coords, snapped_count, inserted_count).
     """
     if not nps_master:
-        return list(kmz_master), 0
+        return list(kmz_master), 0, 0
     grid = _build_spatial_index(nps_master)
     threshold_km = threshold_m / 1000.0
-    out = []
-    snapped = 0
+    # Pass 1: snap each KMZ vertex, recording its NPS index when found.
+    snaps = []
+    snapped_count = 0
     for kp in kmz_master:
         idx, d = _nearest_in_grid(kp, nps_master, grid, search_radius=1)
         if idx >= 0 and d < threshold_km:
-            out.append(nps_master[idx])
-            snapped += 1
+            snaps.append((nps_master[idx], idx))
+            snapped_count += 1
         else:
-            out.append(kp)
-    return out, snapped
+            snaps.append((kp, None))
+    # Pass 2: walk the snap list, splicing NPS interior between snapped pairs.
+    if not snaps:
+        return [], 0, 0
+    out = [snaps[0][0]]
+    inserted = 0
+    for i in range(1, len(snaps)):
+        prev_pt, prev_idx = snaps[i - 1]
+        cur_pt, cur_idx = snaps[i]
+        if prev_idx is not None and cur_idx is not None and cur_idx > prev_idx + 1:
+            # Both snapped, NPS index moves forward — splice interior NPS points
+            # IF the NPS path length isn't suspiciously larger than KMZ straight.
+            kmz_d = hav_km(prev_pt, cur_pt)
+            nps_d = 0.0
+            for j in range(prev_idx, cur_idx):
+                nps_d += hav_km(nps_master[j], nps_master[j + 1])
+            if nps_d < max(0.5, 5.0 * kmz_d):
+                for j in range(prev_idx + 1, cur_idx):
+                    out.append(nps_master[j])
+                    inserted += 1
+        out.append(cur_pt)
+    return out, snapped_count, inserted
 
 
 def _project_pois_to_master(pois, master_coords, cum_mi, threshold_m=500):
@@ -1162,11 +1195,12 @@ def main_kmz():
     treadway_geojson = fetch_appa_layer("treadway")
     nps_master = stitch_treadway(treadway_geojson)
     print(f"  NPS master coords: {len(nps_master)}")
-    blended_master, snapped = _snap_kmz_to_nps(kmz_master, nps_master, threshold_m=100)
-    pct = (100.0 * snapped / max(1, len(blended_master)))
+    blended_master, snapped, inserted = _snap_kmz_to_nps(kmz_master, nps_master, threshold_m=100)
+    pct = (100.0 * snapped / max(1, len(kmz_master)))
     blended_total_km = sum(hav_km(blended_master[i], blended_master[i + 1]) for i in range(len(blended_master) - 1))
-    print(f"  snapped {snapped}/{len(blended_master)} points to NPS ({pct:.1f}%)")
-    print(f"  blended length: {blended_total_km / 1.609:.1f} mi")
+    print(f"  snapped {snapped}/{len(kmz_master)} KMZ points to NPS ({pct:.1f}%)")
+    print(f"  inserted {inserted} NPS interior points (recovered wiggle)")
+    print(f"  blended master: {len(blended_master)} coords, {blended_total_km / 1.609:.1f} mi")
 
     cum_mi = [0.0]
     for i in range(1, len(blended_master)):

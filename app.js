@@ -619,15 +619,25 @@
     const idx = ((year - earliest) % YEAR_PALETTE.length + YEAR_PALETTE.length) % YEAR_PALETTE.length;
     return YEAR_PALETTE[idx];
   }
+  // Read CSS vars at call time so the trail line picks up theme changes
+  // (light / dark / vintage) without a reload.
+  function _cssVar(name, fallback) {
+    try {
+      const v = getComputedStyle(document.body).getPropertyValue(name).trim();
+      return v || fallback;
+    } catch (e) {
+      return fallback;
+    }
+  }
   function styleFor(segId) {
     const date = progress.get(segId);
     const hiked = progress.has(segId);
     const isPlanned = planned.has(segId);
     if (!hiked) {
-      if (isPlanned) return { color: "#1a5fb4", weight: 4, opacity: 0.95, dashArray: "6 5" };
-      return { color: "#7a4f3a", weight: 2.5, opacity: 0.85, dashArray: null };
+      if (isPlanned) return { color: _cssVar("--plan", "#1a5fb4"), weight: 4, opacity: 0.95, dashArray: "6 5" };
+      return { color: _cssVar("--trail-unhiked", "#7a4f3a"), weight: 2.5, opacity: 0.85, dashArray: null };
     }
-    let color = "#2a7d3a";
+    let color = _cssVar("--hike", "#2a7d3a");
     if (prefs.colorByYear) {
       const year = date ? Number(date.slice(0, 4)) : null;
       color = yearColor(year);
@@ -1286,7 +1296,14 @@
       html.push(`<span>${escapeHtml(st.name)}</span>`);
       html.push(`<span class="state-stats"><span class="done">${hikedCount}</span>/${segs.length} · ${hikedMi.toFixed(1)}/${totalStateMi.toFixed(1)} mi</span>`);
       html.push(`<span class="state-actions">`);
-      html.push(`<button class="state-bulk-btn" data-bulk-state="${escapeHtml(st.name)}" title="Mark all sections in ${escapeHtml(st.name)} as hiked" aria-label="Mark all in state hiked">✓ all</button>`);
+      // Show ✓ all only if there's anything left to mark, ✕ all only if
+      // there's anything to clear. Both visible when the state is mixed.
+      if (hikedCount < segs.length) {
+        html.push(`<button class="state-bulk-btn" data-bulk-state="${escapeHtml(st.name)}" title="Mark all sections in ${escapeHtml(st.name)} as hiked" aria-label="Mark all in state hiked">✓ all</button>`);
+      }
+      if (hikedCount > 0) {
+        html.push(`<button class="state-bulk-btn state-clear-btn" data-clear-state="${escapeHtml(st.name)}" title="Clear hiked status on every section in ${escapeHtml(st.name)}" aria-label="Clear all in state">✕ all</button>`);
+      }
       html.push(`</span>`);
       html.push(`</header>`);
       html.push(`<div class="state-body">`);
@@ -2404,17 +2421,35 @@
       pendingApplyAfterHook = null;
     };
   }
-  // -------- Theme --------
+  // -------- Theme: light / dark / vintage --------
+  // The button cycles through the three states; the icon reflects what the
+  // NEXT click will switch to, not the current theme. Refreshes map styles
+  // after applying so the trail line picks up the new --hike / --plan vars.
+  const THEME_ORDER = ["light", "dark", "vintage"];
+  const THEME_BTN_LABELS = {
+    light:   "☾ Dark mode",
+    dark:    "🗺 Vintage",
+    vintage: "☀ Light mode",
+  };
+  function resolveTheme() {
+    if (prefs.theme && THEME_ORDER.includes(prefs.theme)) return prefs.theme;
+    // null/auto: follow system preference, but never auto-switch to vintage.
+    if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) return "dark";
+    return "light";
+  }
   function applyTheme() {
-    const wantDark = prefs.theme === "dark"
-      || (prefs.theme === null && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
-    document.body.classList.toggle("theme-dark", wantDark);
+    const t = resolveTheme();
+    document.body.classList.toggle("theme-dark", t === "dark");
+    document.body.classList.toggle("theme-vintage", t === "vintage");
     const btn = $("theme-btn");
-    if (btn) btn.textContent = wantDark ? "☼ Toggle theme" : "☾ Toggle theme";
+    if (btn) btn.textContent = THEME_BTN_LABELS[t] || THEME_BTN_LABELS.light;
+    // Trail line color is derived from CSS vars at refresh time.
+    if (typeof refreshMapStyles === "function") refreshMapStyles();
   }
   function toggleTheme() {
-    const isDark = document.body.classList.contains("theme-dark");
-    prefs.theme = isDark ? "light" : "dark";
+    const cur = resolveTheme();
+    const next = THEME_ORDER[(THEME_ORDER.indexOf(cur) + 1) % THEME_ORDER.length];
+    prefs.theme = next;
     savePrefs();
     applyTheme();
   }
@@ -2532,6 +2567,35 @@
       }
       const ids = segs.map((s) => s.id);
       openBulkDate(ids, true);
+      return;
+    }
+    // Clear hiked status on every section in a state. Confirms first
+    // since this is destructive (drops dates + notes are kept on the
+    // segment but no longer visible since the row collapses).
+    const clearBtn = e.target.closest("[data-clear-state]");
+    if (clearBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const stateName = clearBtn.dataset.clearState;
+      const segs = DATA.segments.filter(
+        (s) => effectiveStateName(s) === stateName && progress.has(s.id)
+      );
+      if (segs.length === 0) {
+        alert(`No sections in ${stateName} are marked hiked.`);
+        return;
+      }
+      const totalMi = segs.reduce((a, s) => a + s.miles, 0);
+      const ok = confirm(
+        `Clear hiked status on all ${segs.length} sections in ${stateName} ` +
+        `(${totalMi.toFixed(1)} mi)? Dates will be lost. Notes are kept.`
+      );
+      if (!ok) return;
+      const ids = segs.map((s) => s.id);
+      for (const id of ids) toggleSegment(id, false);
+      saveProgress();
+      updateStats();
+      refreshMapStyles();
+      renderSections();
       return;
     }
     const chunkHeader = e.target.closest(".chunk-header");
