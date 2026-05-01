@@ -10,6 +10,18 @@
   const LS_PREFS = "at-tracker-prefs-v1";
   const DEFAULT_PROFILE = "Me";
   const EPOCH = Date.UTC(2000, 0, 1);
+  // Phase-1 mobile: tag touch devices and small viewports so CSS can offer
+  // bigger hit zones, single-pane layouts, etc., without bloating desktop.
+  // body.touch === has any touch capability; body.mobile === narrow viewport.
+  // Both can be true (phone) or one (touch laptop, narrow desktop window).
+  if ("ontouchstart" in window || navigator.maxTouchPoints > 0) {
+    document.body.classList.add("touch");
+  }
+  function _applyMobileClass() {
+    document.body.classList.toggle("mobile", window.innerWidth <= 760);
+  }
+  _applyMobileClass();
+  window.addEventListener("resize", _applyMobileClass);
 
   // -------- DOM --------
   const $ = (id) => document.getElementById(id);
@@ -702,8 +714,8 @@
       // a >1km internal jump. Leaflet renders each run as a separate stroke.
       const runs = _splitGeomOnGaps(seg.geom, 1.0);
       const latlngs = runs.map((run) => run.map(([lon, lat]) => [lat, lon]));
-      const layer = L.polyline(latlngs, { ...styleFor(seg.id), bubblingMouseEvents: false });
-      layer.on("click", () => {
+      const layer = L.polyline(latlngs, { ...styleFor(seg.id), bubblingMouseEvents: false, lineCap: "round" });
+      const onSegClick = () => {
         const el = document.querySelector(`[data-seg="${seg.id}"]`);
         if (el) {
           const stateEl = el.closest(".state");
@@ -711,11 +723,25 @@
             stateEl.classList.remove("collapsed");
             openStates.add(stateEl.dataset.state);
           }
+          // On mobile, switch to the List tab so the user can see the row.
+          if (document.body.classList.contains("mobile")) setMobileTab("list");
           el.scrollIntoView({ behavior: "smooth", block: "center" });
           el.classList.add("map-hover");
           setTimeout(() => el.classList.remove("map-hover"), 1500);
         }
-      });
+      };
+      layer.on("click", onSegClick);
+      // Touch-target booster: invisible fat polyline beneath each visible
+      // segment so finger taps along thin trail lines reliably register.
+      // Only added on touch devices to keep desktop pixel-precise hover.
+      if (document.body.classList.contains("touch")) {
+        const fat = L.polyline(latlngs, {
+          color: "#000", weight: 16, opacity: 0, lineCap: "round",
+          interactive: true, bubblingMouseEvents: false,
+        });
+        fat.on("click", onSegClick);
+        fat.addTo(map);
+      }
       const cumStart = segCumulative.get(seg.id) || 0;
       layer.bindTooltip(
         `${escapeHtml(seg.from)} → ${escapeHtml(seg.to)}<br>` +
@@ -2352,7 +2378,7 @@
           "  ~250 ft/mi → 5 (Moderate)\n" +
           "  ~350 ft/mi → 7 (Strenuous)\n" +
           "  ~500 ft/mi → 9 (Very strenuous, e.g. Whites/Mahoosucs)";
-        html.push(`<div class="diff-bar-row" style="border-color:${stress.color};" title="${escapeHtml(gradeTitle)}">` +
+        html.push(`<div class="diff-bar-row tappable-title" style="border-color:${stress.color};cursor:help;" title="${escapeHtml(gradeTitle)}">` +
           `<div class="grade" style="color:${stress.color};">${stress.grade.toFixed(1)}<span class="of">/10</span></div>` +
           `<div class="meta"><div class="label" style="color:${stress.color};">${stress.label}</div>` +
             `<div class="track"><div class="fill" style="width:${widthPct}%;background:${stress.color};"></div></div></div>` +
@@ -2893,6 +2919,87 @@
     prefs.theme = isDark ? "light" : "dark";
     savePrefs();
     applyTheme();
+  }
+
+  // -------- Tap-popover (touch alt to title= tooltips) --------
+  // Native HTML title= attributes only appear on hover, which doesn't
+  // exist on touch devices. For elements opted in via the data-popover
+  // attribute (or carrying a title= and matching .tappable-title), a
+  // tap shows a small popover with the same text and dismisses on next
+  // outside-tap or Escape.
+  let _activePopover = null;
+  function closeTapPopover() {
+    if (_activePopover) {
+      _activePopover.remove();
+      _activePopover = null;
+    }
+  }
+  function openTapPopover(text, anchorRect) {
+    closeTapPopover();
+    if (!text) return;
+    const el = document.createElement("div");
+    el.className = "tap-popover";
+    el.textContent = text;
+    document.body.appendChild(el);
+    // Position above the anchor when there's room, otherwise below.
+    const r = el.getBoundingClientRect();
+    const above = anchorRect.top - r.height - 8;
+    let top = above >= 8 ? above : anchorRect.bottom + 8;
+    let left = anchorRect.left + (anchorRect.width / 2) - (r.width / 2);
+    left = Math.max(8, Math.min(left, window.innerWidth - r.width - 8));
+    el.style.top = `${Math.round(top)}px`;
+    el.style.left = `${Math.round(left)}px`;
+    _activePopover = el;
+  }
+  // Delegate touch taps on elements that have the data-popover OR
+  // title= attribute and the .tappable-title class. Only active on
+  // touch devices so desktop hover keeps using the native tooltip.
+  document.addEventListener("click", (e) => {
+    if (!document.body.classList.contains("touch")) return;
+    const target = e.target.closest("[data-popover], .tappable-title");
+    if (!target) {
+      // Click outside — close any open popover
+      if (_activePopover && !e.target.closest(".tap-popover")) closeTapPopover();
+      return;
+    }
+    const text = target.dataset.popover || target.getAttribute("title") || "";
+    if (!text) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openTapPopover(text, target.getBoundingClientRect());
+  }, true);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeTapPopover();
+  });
+
+  // -------- Mobile List/Map tab bar --------
+  // Visible only when body.mobile (viewport <= 760px). Swaps which pane
+  // (#sidebar or #map) is shown via body.tab-list / body.tab-map class.
+  // Persists last choice to localStorage so a reload keeps the user's
+  // pane. Uses Leaflet's invalidateSize() when switching back to the map
+  // because the map's internal size cache goes stale while it's hidden.
+  const MOBILE_TAB_KEY = "at-tracker-mobile-tab";
+  function setMobileTab(which) {
+    const tab = which === "map" ? "map" : "list";
+    document.body.classList.toggle("tab-list", tab === "list");
+    document.body.classList.toggle("tab-map", tab === "map");
+    document.querySelectorAll("[data-mobile-tab]").forEach((b) => {
+      const active = b.dataset.mobileTab === tab;
+      b.classList.toggle("active", active);
+      b.setAttribute("aria-selected", String(active));
+    });
+    safeSet(MOBILE_TAB_KEY, tab);
+    if (tab === "map" && map) {
+      // Map was display:none; need to recalc tile rendering bounds.
+      requestAnimationFrame(() => map.invalidateSize());
+    }
+  }
+  function setupMobileTabs() {
+    const initial = safeGet(MOBILE_TAB_KEY) || "list";
+    setMobileTab(initial);
+    document.querySelectorAll("[data-mobile-tab]").forEach((b) => {
+      b.addEventListener("click", () => setMobileTab(b.dataset.mobileTab));
+    });
   }
 
   // -------- First-run intro --------
@@ -4390,6 +4497,13 @@
 
     // Global search wiring
     $("search-btn")?.addEventListener("click", openSearch);
+    // Mobile More-menu entries — share the same handlers as the top-toolbar
+    // buttons (which are hidden via CSS at narrow widths).
+    $("search-btn-mobile")?.addEventListener("click", openSearch);
+    $("planned-btn-mobile")?.addEventListener("click", renderPlannedSummary);
+    $("stats-btn-mobile")?.addEventListener("click", renderStats);
+    // Mobile List/Map tab bar wiring
+    setupMobileTabs();
     $("search-input")?.addEventListener("input", (e) => renderSearchResults(e.target.value));
     $("search-input")?.addEventListener("keydown", searchKeyDown);
     $("search-overlay")?.addEventListener("click", (e) => {

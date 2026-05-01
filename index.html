@@ -720,19 +720,130 @@
     body.print-plan .iti-row, body.print-plan .seg-line { page-break-inside: avoid; }
   }
 
-  @media (max-width: 760px) {
-    main { flex-direction: column; }
-    #sidebar { width: 100%; max-height: 50vh; border-right: none; border-bottom: 1px solid var(--rule); }
-    #map { height: 50vh; }
-    header { position: sticky; top: 0; z-index: 10; }
-    .stats { font-size: 12px; gap: 12px; }
-    .progress-bar { display: none; }
+  /* ===== Phase 1 mobile ===== */
+
+  /* Tab bar for narrow viewports — switches between sidebar list and map.
+     Hidden by default; the body.mobile class (set in app.js by viewport
+     width) flips it on. Sticky inside main so it survives scroll. */
+  .mobile-tabs { display: none; }
+  body.mobile .mobile-tabs {
+    display: flex;
+    flex-shrink: 0;
+    background: var(--panel);
+    border-bottom: 1px solid var(--rule);
+    z-index: 5;
+  }
+  body.mobile .mobile-tabs button {
+    flex: 1;
+    border: none;
+    background: transparent;
+    padding: 10px 8px;
+    font: inherit;
+    font-size: 13px;
+    color: var(--muted);
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    border-radius: 0;
+    transition: color .12s, border-color .12s;
+  }
+  body.mobile .mobile-tabs button.active {
+    color: var(--ink);
+    border-bottom-color: var(--accent);
+    font-weight: 600;
+  }
+
+  /* On phones: full-height column layout with one pane visible at a time. */
+  body.mobile { height: 100dvh; }
+  body.mobile main { flex-direction: column; overflow: hidden; }
+  body.mobile #sidebar { width: 100%; max-height: none; height: auto; flex: 1; border-right: none; border-bottom: none; }
+  body.mobile #map { height: auto; flex: 1; }
+  body.mobile.tab-list #map { display: none; }
+  body.mobile.tab-map #sidebar { display: none; }
+  /* Header collapses on small phones — title becomes the glyph, stats
+     compact, identity pill becomes avatar-only, hide top-level
+     Search/Planned/Stats (those move into the More overflow menu via
+     the mobile-only entries below). */
+  body.mobile header {
+    padding: 8px 12px;
+    gap: 8px;
+    border-bottom: 1px solid var(--rule);
+  }
+  body.mobile header h1 { font-size: 15px; }
+  body.mobile header h1 .accent { margin-right: 0; }
+  body.mobile .stats { font-size: 12px; gap: 10px; flex-wrap: nowrap; min-width: 0; overflow: hidden; }
+  body.mobile .stats > span { white-space: nowrap; }
+  body.mobile .progress-bar { display: none; }
+  body.mobile #stat-planned { display: none; }
+  @media (max-width: 620px) {
+    body.mobile header h1 .at-title-text { display: none; }
+    body.mobile .identity-trigger .ident-name,
+    body.mobile .identity-trigger .ident-caret { display: none; }
+    body.mobile .identity-trigger { padding: 4px; border-radius: 50%; }
+    body.mobile #search-btn,
+    body.mobile #planned-btn,
+    body.mobile #stats-btn { display: none; }
+  }
+  /* Touch-only entries inside the More overflow menu, surfacing the
+     actions hidden from the top toolbar at small widths. */
+  .overflow-list .mobile-only-btn { display: none; }
+  body.mobile .overflow-list .mobile-only-btn { display: block; }
+  body.mobile .overflow-list .mobile-only-divider { display: block; }
+  .overflow-list .mobile-only-divider { display: none; }
+
+  /* Touch target floor — only on touch devices, so desktop UI doesn't
+     bloat. 36px is the minimum tappable height we accept for buttons
+     surfaced in primary flows. Icon-only buttons get a 28×28 hit zone. */
+  body.touch button { min-height: 36px; }
+  body.touch .seg input[type=checkbox] { transform: scale(1.2); margin: 4px 4px 0 0; }
+  body.touch .seg .plan-btn,
+  body.touch .seg .zoom-btn,
+  body.touch .seg .lore-btn { width: 28px; height: 28px; }
+  /* Don't bloat the small chunk-collapse caret or in-popover form rows */
+  body.touch .overflow-trigger,
+  body.touch .pack-form-actions button,
+  body.touch .pack-add-form button { min-height: 32px; }
+
+  /* iOS auto-zooms inputs whose font-size < 16px on focus. Bump on touch
+     devices only to avoid the desktop UI looking comically bigger. */
+  body.touch input[type=text],
+  body.touch input[type=date],
+  body.touch input[type=number],
+  body.touch input[type=search],
+  body.touch select,
+  body.touch textarea { font-size: 16px; }
+
+  /* Sticky bottom action row on mobile so Close is always reachable. */
+  body.mobile .modal { padding: 14px; max-width: 96vw; }
+  body.mobile .modal-actions {
+    position: sticky;
+    bottom: 0;
+    background: var(--panel);
+    margin: 12px -14px -14px;
+    padding: 10px 14px;
+    border-top: 1px solid var(--rule);
+    z-index: 1;
+  }
+
+  /* Generic tap-popover for what used to be hover tooltips. Triggered
+     by JS — see openTapPopover. Replaces native title= UX on touch. */
+  .tap-popover {
+    position: fixed;
+    background: var(--ink);
+    color: var(--bg);
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    line-height: 1.5;
+    max-width: min(320px, 80vw);
+    white-space: pre-wrap;
+    z-index: 1300;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
   }
 </style>
 </head>
 <body>
 <header>
-  <h1><span class="accent">⛰</span> AT Section Tracker</h1>
+  <h1><span class="accent">⛰</span> <span class="at-title-text">AT Section Tracker</span></h1>
   <div class="stats" id="stats">
     <span><strong id="stat-segs">0</strong> / <span id="stat-total-segs">0</span> sections</span>
     <span><strong id="stat-miles">0</strong> / <span id="stat-total-miles">0</span> mi</span>
@@ -771,6 +882,11 @@
     <div class="overflow-menu" id="actions-more">
       <button class="overflow-trigger" data-menu-trigger title="More actions" aria-haspopup="true" aria-expanded="false">⋯ More</button>
       <div class="overflow-list" role="menu">
+        <!-- Mobile-only: surfaces the actions removed from the narrow toolbar -->
+        <button id="search-btn-mobile" class="mobile-only-btn" title="Search trail features">🔎 Search</button>
+        <button id="planned-btn-mobile" class="mobile-only-btn">🗓 Planned</button>
+        <button id="stats-btn-mobile" class="mobile-only-btn">📊 Stats</button>
+        <div class="menu-divider mobile-only-divider"></div>
         <button id="pack-btn" title="Plan your pack: items, weight tally, and condition notes">🎒 Pack</button>
         <div class="menu-divider"></div>
         <div class="menu-label">Backup</div>
@@ -791,6 +907,13 @@
 </header>
 
 <main>
+  <!-- Mobile-only tab bar. Hidden on desktop via display:none, shown
+       when body.mobile is set (viewport <= 760px). JS toggles the
+       body.tab-list / body.tab-map class to swap which pane is shown. -->
+  <nav class="mobile-tabs" id="mobile-tabs" role="tablist">
+    <button type="button" data-mobile-tab="list" role="tab" aria-selected="true">🥾 List</button>
+    <button type="button" data-mobile-tab="map" role="tab" aria-selected="false">🗺 Map</button>
+  </nav>
   <aside id="sidebar">
     <div class="filter-bar">
       <div class="filter-row">
@@ -1451,6 +1574,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=43"></script>
+<script src="app.js?v=44"></script>
 </body>
 </html>
