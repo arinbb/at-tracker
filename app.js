@@ -47,6 +47,10 @@
   let trips = []; // [{id, name, createdAt, segs: [ids]}]; planned is derived from active trip
   let activeTripId = null;
   let notes = new Map();
+  // Pack planner — single loadout per profile. Stored as { items: [...] }
+  // where each item is { id, name, category, weight_oz, condition, notes,
+  // worn, consumable }. See PACK_CATEGORIES / PACK_CONDITIONS below.
+  let pack = { items: [] };
   let prefs = {
     direction: "nobo",
     showShelters: true,
@@ -89,6 +93,7 @@
   function notesKey(name) { return `at-tracker-notes::${name}`; }
   function plannedKey(name) { return `at-tracker-planned::${name}`; }
   function tripsKey(name) { return `at-tracker-trips::${name}`; }
+  function packKey(name) { return `at-tracker-pack::${name}`; }
 
   // -------- Encoding (URL share) --------
   function encodeProgress(prog) {
@@ -409,6 +414,7 @@
     progress = loadProgressForActive();
     planned = loadPlannedForActive();
     notes = loadNotesForActive();
+    pack = loadPackForActive();
     {
       const td = loadTripsForActive();
       trips = td.trips;
@@ -536,6 +542,19 @@
       const obj = JSON.parse(raw);
       return new Map(Object.entries(obj).map(([k, v]) => [Number(k), v || ""]));
     } catch (e) { return new Map(); }
+  }
+  function loadPackForActive() {
+    const raw = safeGet(packKey(activeProfile));
+    if (!raw) return { items: [] };
+    try {
+      const obj = JSON.parse(raw);
+      if (!obj || !Array.isArray(obj.items)) return { items: [] };
+      return obj;
+    } catch (e) { return { items: [] }; }
+  }
+  function savePack() {
+    safeSet(packKey(activeProfile), JSON.stringify(pack));
+    scheduleCloudSave();
   }
   function loadPrefs() {
     const raw = safeGet(LS_PREFS);
@@ -1552,6 +1571,222 @@
     $("stats-profile-name").textContent = activeProfile;
     $("stats-body").innerHTML = html.join("");
     $("stats-modal").classList.add("show");
+  }
+
+  // -------- Pack planner --------
+  // Single per-profile loadout. Each item carries a category, weight in
+  // ounces, condition rating, and free-text notes for "the left boot's
+  // sole is separating" / "missing one tent stake". Weight totals split
+  // base (carried, non-consumable, non-worn) from worn-on-body and from
+  // consumables that vary trip-to-trip.
+  const PACK_CATEGORIES = [
+    { id: "pack",      label: "Pack" },
+    { id: "shelter",   label: "Shelter" },
+    { id: "sleep",     label: "Sleep system" },
+    { id: "kitchen",   label: "Kitchen" },
+    { id: "clothing",  label: "Clothing" },
+    { id: "hygiene",   label: "Hygiene & first aid" },
+    { id: "electronics", label: "Electronics" },
+    { id: "consumables", label: "Food / fuel / water" },
+    { id: "misc",      label: "Misc" },
+  ];
+  const PACK_CONDITIONS = [
+    { id: "new",          label: "New",            color: "#2a7d3a", icon: "●" },
+    { id: "good",         label: "Good",           color: "#2a7d3a", icon: "●" },
+    { id: "worn",         label: "Showing wear",   color: "#c89441", icon: "◐" },
+    { id: "replace_soon", label: "Replace soon",   color: "#d97a64", icon: "▲" },
+    { id: "replace_now",  label: "Replace now",    color: "#8b3a2f", icon: "✕" },
+  ];
+  function packCondInfo(id) {
+    return PACK_CONDITIONS.find((c) => c.id === id) || PACK_CONDITIONS[1];
+  }
+  function packCategoryLabel(id) {
+    const c = PACK_CATEGORIES.find((x) => x.id === id);
+    return c ? c.label : "Misc";
+  }
+  function ozToLb(oz) {
+    const lb = oz / 16;
+    return lb < 10 ? lb.toFixed(2) : lb.toFixed(1);
+  }
+  function computePackTotals(items) {
+    let base = 0, worn = 0, consumable = 0;
+    for (const it of items) {
+      const w = Number(it.weight_oz) || 0;
+      if (it.consumable) consumable += w;
+      else if (it.worn) worn += w;
+      else base += w;
+    }
+    return { base, worn, consumable, total: base + worn + consumable };
+  }
+  function newPackItemId() {
+    // Simple monotonic id from current time + random nibble. Collision-resistant
+    // enough for a per-profile list with < 1000 items.
+    return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  }
+  function renderPack() {
+    const items = pack.items;
+    const totals = computePackTotals(items);
+    const needsReplacing = items.filter(
+      (i) => i.condition === "replace_soon" || i.condition === "replace_now"
+    );
+    const html = [];
+    // Totals strip
+    html.push(`<div class="pack-totals">`);
+    html.push(`<div><span class="lbl">Base</span><span class="val">${ozToLb(totals.base)} lb<small> · ${totals.base.toFixed(1)} oz</small></span></div>`);
+    html.push(`<div><span class="lbl">Worn</span><span class="val">${ozToLb(totals.worn)} lb<small> · ${totals.worn.toFixed(1)} oz</small></span></div>`);
+    html.push(`<div><span class="lbl">Consumables</span><span class="val">${ozToLb(totals.consumable)} lb<small> · ${totals.consumable.toFixed(1)} oz</small></span></div>`);
+    html.push(`<div class="pack-total-final"><span class="lbl">Total</span><span class="val">${ozToLb(totals.total)} lb<small> · ${totals.total.toFixed(1)} oz</small></span></div>`);
+    html.push(`</div>`);
+    if (needsReplacing.length > 0) {
+      html.push(`<div class="pack-warn">⚠ <strong>${needsReplacing.length}</strong> item${needsReplacing.length === 1 ? "" : "s"} need replacing: ${needsReplacing.map((i) => escapeHtml(i.name)).slice(0, 3).join(", ")}${needsReplacing.length > 3 ? "…" : ""}</div>`);
+    }
+    if (items.length === 0) {
+      html.push(`<p class="pack-empty">Your pack is empty. Add an item below to get started.</p>`);
+    } else {
+      // Group by category, in PACK_CATEGORIES order
+      const byCat = new Map();
+      for (const it of items) {
+        const k = it.category || "misc";
+        if (!byCat.has(k)) byCat.set(k, []);
+        byCat.get(k).push(it);
+      }
+      for (const cat of PACK_CATEGORIES) {
+        const cIts = byCat.get(cat.id);
+        if (!cIts || cIts.length === 0) continue;
+        const catTotal = cIts.reduce((a, i) => a + (Number(i.weight_oz) || 0), 0);
+        html.push(`<section class="pack-cat">`);
+        html.push(`<header class="pack-cat-header"><span>${escapeHtml(cat.label)}</span><span class="pack-cat-stats">${cIts.length} item${cIts.length === 1 ? "" : "s"} · ${ozToLb(catTotal)} lb</span></header>`);
+        for (const it of cIts) {
+          const cond = packCondInfo(it.condition || "good");
+          const flags = [];
+          if (it.worn) flags.push("worn");
+          if (it.consumable) flags.push("consumable");
+          html.push(`<div class="pack-item" data-pack-id="${escapeHtml(it.id)}">`);
+          html.push(`<div class="pack-item-name">${escapeHtml(it.name || "(unnamed)")}${flags.length ? ` <small class="pack-flags">[${flags.join(", ")}]</small>` : ""}</div>`);
+          html.push(`<div class="pack-item-weight">${(Number(it.weight_oz) || 0).toFixed(1)} oz</div>`);
+          html.push(`<div class="pack-item-cond" style="color:${cond.color};" title="${escapeHtml(cond.label)}">${cond.icon} ${escapeHtml(cond.label)}</div>`);
+          html.push(`<div class="pack-item-actions">`);
+          html.push(`<button class="pack-edit-btn" data-pack-edit="${escapeHtml(it.id)}" title="Edit item" aria-label="Edit item">✎</button>`);
+          html.push(`<button class="pack-del-btn" data-pack-delete="${escapeHtml(it.id)}" title="Delete item" aria-label="Delete item">✕</button>`);
+          html.push(`</div>`);
+          if (it.notes) {
+            html.push(`<div class="pack-item-notes">${escapeHtml(it.notes)}</div>`);
+          }
+          html.push(`</div>`);
+        }
+        html.push(`</section>`);
+      }
+    }
+    $("pack-profile-name").textContent = activeProfile;
+    $("pack-body").innerHTML = html.join("");
+    // Reset add-form to defaults so a re-open isn't pre-filled with an
+    // accidentally-still-typed name from last time.
+    resetPackAddForm();
+    $("pack-modal").classList.add("show");
+  }
+  function resetPackAddForm() {
+    const nameEl = $("pack-add-name");
+    if (nameEl) nameEl.value = "";
+    const wEl = $("pack-add-weight");
+    if (wEl) wEl.value = "";
+    const notesEl = $("pack-add-notes");
+    if (notesEl) notesEl.value = "";
+    const wornEl = $("pack-add-worn");
+    if (wornEl) wornEl.checked = false;
+    const consEl = $("pack-add-consumable");
+    if (consEl) consEl.checked = false;
+    // Cat + cond stay on whatever the user picked last; that's usually
+    // helpful when adding a string of similar items.
+    const editIdEl = $("pack-add-edit-id");
+    if (editIdEl) editIdEl.value = "";
+    const submitEl = $("pack-add-submit");
+    if (submitEl) submitEl.textContent = "Add item";
+    const cancelEl = $("pack-add-cancel-edit");
+    if (cancelEl) cancelEl.style.display = "none";
+  }
+  function packAddSubmit() {
+    const name = $("pack-add-name").value.trim();
+    if (!name) {
+      alert("Please enter a name for the item.");
+      return;
+    }
+    const weight_oz = Math.max(0, parseFloat($("pack-add-weight").value) || 0);
+    const category = $("pack-add-category").value;
+    const condition = $("pack-add-condition").value;
+    const worn = $("pack-add-worn").checked;
+    const consumable = $("pack-add-consumable").checked;
+    const notes = $("pack-add-notes").value.trim();
+    const editId = $("pack-add-edit-id").value;
+    if (editId) {
+      const it = pack.items.find((i) => i.id === editId);
+      if (it) {
+        // Immutable update: produce a new items array with the patched item.
+        pack = {
+          ...pack,
+          items: pack.items.map((i) => i.id === editId
+            ? { ...i, name, weight_oz, category, condition, worn, consumable, notes }
+            : i),
+        };
+      }
+    } else {
+      pack = {
+        ...pack,
+        items: [...pack.items, {
+          id: newPackItemId(),
+          name, weight_oz, category, condition, worn, consumable, notes,
+        }],
+      };
+    }
+    savePack();
+    renderPack();
+  }
+  function packBeginEdit(id) {
+    const it = pack.items.find((x) => x.id === id);
+    if (!it) return;
+    $("pack-add-name").value = it.name || "";
+    $("pack-add-weight").value = it.weight_oz != null ? String(it.weight_oz) : "";
+    $("pack-add-category").value = it.category || "misc";
+    $("pack-add-condition").value = it.condition || "good";
+    $("pack-add-worn").checked = !!it.worn;
+    $("pack-add-consumable").checked = !!it.consumable;
+    $("pack-add-notes").value = it.notes || "";
+    $("pack-add-edit-id").value = it.id;
+    $("pack-add-submit").textContent = "Save changes";
+    $("pack-add-cancel-edit").style.display = "";
+    // Scroll the form into view so the user sees what they're editing.
+    $("pack-add-form").scrollIntoView({ behavior: "smooth", block: "end" });
+    $("pack-add-name").focus();
+  }
+  function packCancelEdit() {
+    resetPackAddForm();
+  }
+  function packDelete(id) {
+    const it = pack.items.find((x) => x.id === id);
+    if (!it) return;
+    if (!confirm(`Remove "${it.name}" from your pack?`)) return;
+    pack = { ...pack, items: pack.items.filter((x) => x.id !== id) };
+    savePack();
+    renderPack();
+  }
+  function onPackBodyClick(e) {
+    const editBtn = e.target.closest("[data-pack-edit]");
+    if (editBtn) { e.preventDefault(); packBeginEdit(editBtn.dataset.packEdit); return; }
+    const delBtn = e.target.closest("[data-pack-delete]");
+    if (delBtn) { e.preventDefault(); packDelete(delBtn.dataset.packDelete); return; }
+  }
+  function populatePackFormSelects() {
+    const catSel = $("pack-add-category");
+    if (catSel && !catSel.options.length) {
+      catSel.innerHTML = PACK_CATEGORIES.map((c) =>
+        `<option value="${escapeHtml(c.id)}">${escapeHtml(c.label)}</option>`
+      ).join("");
+    }
+    const condSel = $("pack-add-condition");
+    if (condSel && !condSel.options.length) {
+      condSel.innerHTML = PACK_CONDITIONS.map((c) =>
+        `<option value="${escapeHtml(c.id)}"${c.id === "good" ? " selected" : ""}>${escapeHtml(c.label)}</option>`
+      ).join("");
+    }
   }
 
   // -------- Planned summary --------
@@ -2942,6 +3177,7 @@
     progress = loadProgressForActive();
     planned = loadPlannedForActive();
     notes = loadNotesForActive();
+    pack = loadPackForActive();
     {
       const td = loadTripsForActive();
       trips = td.trips;
@@ -2975,11 +3211,13 @@
       const pl = safeGet(plannedKey(name));
       const nt = safeGet(notesKey(name));
       const tr = safeGet(tripsKey(name));
+      const pk = safeGet(packKey(name));
       profileData[name] = {
         hiked: prog ? safeJsonParse(prog, {}) : {},
         planned: pl ? safeJsonParse(pl, []) : [],
         notes: nt ? safeJsonParse(nt, {}) : {},
         trips: tr ? safeJsonParse(tr, { trips: [], activeTripId: null }) : { trips: [], activeTripId: null },
+        pack: pk ? safeJsonParse(pk, { items: [] }) : { items: [] },
       };
     }
     return {
@@ -3008,6 +3246,7 @@
         if (pdata.planned) safeSet(plannedKey(name), JSON.stringify(pdata.planned));
         if (pdata.notes) safeSet(notesKey(name), JSON.stringify(pdata.notes));
         if (pdata.trips) safeSet(tripsKey(name), JSON.stringify(pdata.trips));
+        if (pdata.pack) safeSet(packKey(name), JSON.stringify(pdata.pack));
       }
       if (data.prefs) {
         prefs = { ...prefs, ...data.prefs };
@@ -3022,6 +3261,7 @@
       progress = loadProgressForActive();
       planned = loadPlannedForActive();
       notes = loadNotesForActive();
+      pack = loadPackForActive();
       const td = loadTripsForActive();
       trips = td.trips;
       activeTripId = td.activeTripId;
@@ -3580,6 +3820,7 @@
     progress = loadProgressForActive();
     planned = loadPlannedForActive();
     notes = loadNotesForActive();
+    pack = loadPackForActive();
     {
       const td = loadTripsForActive();
       trips = td.trips;
@@ -3751,6 +3992,13 @@
     $("stats-btn").addEventListener("click", renderStats);
     $("stats-close").addEventListener("click", () => $("stats-modal").classList.remove("show"));
     $("planned-btn").addEventListener("click", renderPlannedSummary);
+    // Pack planner
+    populatePackFormSelects();
+    $("pack-btn")?.addEventListener("click", renderPack);
+    $("pack-close")?.addEventListener("click", () => $("pack-modal").classList.remove("show"));
+    $("pack-add-submit")?.addEventListener("click", packAddSubmit);
+    $("pack-add-cancel-edit")?.addEventListener("click", packCancelEdit);
+    $("pack-body")?.addEventListener("click", onPackBodyClick);
     $("planned-close").addEventListener("click", () => $("planned-modal").classList.remove("show"));
     $("planned-clear").addEventListener("click", clearAllPlanned);
     $("planned-mark-hiked").addEventListener("click", markPlannedAsHiked);
