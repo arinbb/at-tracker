@@ -620,7 +620,7 @@
     return YEAR_PALETTE[idx];
   }
   // Read CSS vars at call time so the trail line picks up theme changes
-  // (light / dark / vintage) without a reload.
+  // (light or dark) without a reload.
   function _cssVar(name, fallback) {
     try {
       const v = getComputedStyle(document.body).getPropertyValue(name).trim();
@@ -2421,35 +2421,22 @@
       pendingApplyAfterHook = null;
     };
   }
-  // -------- Theme: light / dark / vintage --------
-  // The button cycles through the three states; the icon reflects what the
-  // NEXT click will switch to, not the current theme. Refreshes map styles
-  // after applying so the trail line picks up the new --hike / --plan vars.
-  const THEME_ORDER = ["light", "dark", "vintage"];
-  const THEME_BTN_LABELS = {
-    light:   "☾ Dark mode",
-    dark:    "🗺 Vintage",
-    vintage: "☀ Light mode",
-  };
-  function resolveTheme() {
-    if (prefs.theme && THEME_ORDER.includes(prefs.theme)) return prefs.theme;
-    // null/auto: follow system preference, but never auto-switch to vintage.
-    if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) return "dark";
-    return "light";
-  }
+  // -------- Theme --------
   function applyTheme() {
-    const t = resolveTheme();
-    document.body.classList.toggle("theme-dark", t === "dark");
-    document.body.classList.toggle("theme-vintage", t === "vintage");
+    const wantDark = prefs.theme === "dark"
+      || (prefs.theme === null && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    document.body.classList.toggle("theme-dark", wantDark);
+    // Defensive: if someone has the old vintage flag set in prefs from a
+    // prior build, drop the class so we don't render in a half-removed
+    // theme on first load after this update.
+    document.body.classList.remove("theme-vintage");
     const btn = $("theme-btn");
-    if (btn) btn.textContent = THEME_BTN_LABELS[t] || THEME_BTN_LABELS.light;
-    // Trail line color is derived from CSS vars at refresh time.
+    if (btn) btn.textContent = wantDark ? "☼ Toggle theme" : "☾ Toggle theme";
     if (typeof refreshMapStyles === "function") refreshMapStyles();
   }
   function toggleTheme() {
-    const cur = resolveTheme();
-    const next = THEME_ORDER[(THEME_ORDER.indexOf(cur) + 1) % THEME_ORDER.length];
-    prefs.theme = next;
+    const isDark = document.body.classList.contains("theme-dark");
+    prefs.theme = isDark ? "light" : "dark";
     savePrefs();
     applyTheme();
   }

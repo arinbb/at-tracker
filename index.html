@@ -6,11 +6,6 @@
 <title>AT Section Tracker</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
-<!-- Vintage / Tolkien-style theme webfont. Loaded with display=swap so the
-     UI doesn't block on it; falls back to system serifs while loading. -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600&family=Cinzel+Decorative:wght@400;700&display=swap" rel="stylesheet">
 <style>
   :root {
     --bg: #f5f3ee;
@@ -47,59 +42,6 @@
     --map-bg: #1a1816;
   }
   body.theme-dark .leaflet-container { filter: brightness(0.85) contrast(1.05); }
-
-  /* ---- Vintage (Tolkien-style hand-drawn map) theme ----
-     Aged-parchment palette, sepia-filtered tiles, Cinzel serif headings.
-     Goal: when you open the planner, it should feel like unfolding a worn
-     map from your pack rather than reading a web app. */
-  body.theme-vintage {
-    --bg: #e7d9b1;
-    --panel: #f1e6c4;
-    --panel-alt: #ebdfba;
-    --ink: #3a2412;
-    --muted: #7a5a3a;
-    --rule: #b89866;
-    --hike: #2d4a1f;
-    --hike-bg: #c8c08c;
-    --plan: #5a3a1f;
-    --plan-bg: #d4c290;
-    --accent: #8b2f1f;
-    --hover: #ddcfa1;
-    --input-bg: #f5ecd6;
-    --input-bg-alt: #ebdfba;
-    --map-bg: #d4c08a;
-    --trail-unhiked: #5a3a1f;
-    font-family: "Cinzel", "Trajan Pro", "Constantia", "Goudy Old Style", "Garamond", Georgia, serif;
-  }
-  body.theme-vintage h1,
-  body.theme-vintage h2,
-  body.theme-vintage h3,
-  body.theme-vintage .state-header,
-  body.theme-vintage .identity-trigger {
-    font-family: "Cinzel Decorative", "Cinzel", "Trajan Pro", "Constantia", Georgia, serif;
-    letter-spacing: 0.01em;
-  }
-  body.theme-vintage h1 .accent { color: var(--accent); }
-  body.theme-vintage .seg .name { font-style: italic; }
-  body.theme-vintage button { font-family: "Cinzel", "Constantia", Georgia, serif; }
-  /* Sepia-tone every OSM tile. Heavier than the dark theme's filter
-     because we're trying to look like ink-on-parchment, not just dim. */
-  body.theme-vintage .leaflet-container .leaflet-tile-pane {
-    filter: sepia(0.85) saturate(0.45) hue-rotate(-5deg) brightness(0.96) contrast(1.12);
-  }
-  body.theme-vintage .leaflet-container { background: var(--map-bg); }
-  /* Subtle inner border on the sidebar to read as a map margin. */
-  body.theme-vintage #sidebar { box-shadow: inset -3px 0 8px rgba(58, 36, 18, 0.08); }
-  body.theme-vintage header { border-bottom: 2px solid var(--rule); }
-  body.theme-vintage .state { border-bottom: 1px solid var(--rule); }
-  /* Anchor and hiked rows pick up a richer parchment background. */
-  body.theme-vintage .seg.hiked { background: var(--hike-bg); color: var(--ink); }
-  body.theme-vintage .seg.planned { background: var(--plan-bg); }
-  /* Soften the feature emojis; they read like map symbols then. */
-  body.theme-vintage .feat-marker .feat-emoji {
-    filter: sepia(0.4) brightness(0.9);
-    text-shadow: 0 0 2px #f5ecd6, 0 0 4px #f5ecd6, 1px 1px 0 #f5ecd6, -1px -1px 0 #f5ecd6, 1px -1px 0 #f5ecd6, -1px 1px 0 #f5ecd6;
-  }
 
   /* Focus a11y */
   :focus-visible {
@@ -1229,6 +1171,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=38"></script>
+<script src="app.js?v=39"></script>
 </body>
 </html>
