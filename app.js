@@ -527,10 +527,45 @@
     }
     return { color, weight: 5, opacity: 0.95, dashArray: null };
   }
+  // Haversine distance in km between two [lon, lat] points.
+  function _havKm(a, b) {
+    const R = 6371;
+    const toRad = (d) => (d * Math.PI) / 180;
+    const dLat = toRad(b[1] - a[1]);
+    const dLon = toRad(b[0] - a[0]);
+    const lat1 = toRad(a[1]);
+    const lat2 = toRad(b[1]);
+    const x = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(x));
+  }
+  // The NPS Treadway feed is missing geometry for a handful of trail-club
+  // chunks (notably around Daleville VA, the Whites in NH, and parts of PA).
+  // The stitcher concatenates coords across those gaps, which renders as a
+  // long straight line cutting across the actual trail. Split a segment's
+  // geom into runs of <1km hops so Leaflet draws disconnected strokes
+  // instead of bridging the gap with a visually wrong straight line.
+  function _splitGeomOnGaps(geom, thresholdKm) {
+    if (!geom || geom.length < 2) return [geom || []];
+    const runs = [];
+    let cur = [geom[0]];
+    for (let i = 1; i < geom.length; i++) {
+      if (_havKm(geom[i - 1], geom[i]) > thresholdKm) {
+        if (cur.length > 1) runs.push(cur);
+        cur = [geom[i]];
+      } else {
+        cur.push(geom[i]);
+      }
+    }
+    if (cur.length > 1) runs.push(cur);
+    return runs.length > 0 ? runs : [geom];
+  }
   function drawSegmentsOnMap() {
     const bounds = L.latLngBounds([]);
     DATA.segments.forEach((seg) => {
-      const latlngs = seg.geom.map(([lon, lat]) => [lat, lon]);
+      // Multi-polyline: each "run" is a contiguous chunk of geometry without
+      // a >1km internal jump. Leaflet renders each run as a separate stroke.
+      const runs = _splitGeomOnGaps(seg.geom, 1.0);
+      const latlngs = runs.map((run) => run.map(([lon, lat]) => [lat, lon]));
       const layer = L.polyline(latlngs, { ...styleFor(seg.id), bubblingMouseEvents: false });
       layer.on("click", () => {
         const el = document.querySelector(`[data-seg="${seg.id}"]`);
