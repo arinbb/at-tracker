@@ -860,6 +860,90 @@ def _filter_roads_to_trail_corridor(road_ways, chains_data):
     return kept
 
 
+def _backfill_geom_from_v2(segments):
+    """Replace sparse v3 segment geometry with v2 OSM-derived geometry.
+
+    A segment is "sparse" when either it has only 2 coords or contains an
+    internal hop > 1 km — both indicate the NPS Treadway feed had a gap
+    that the stitcher walked across with a straight line. The v2 dataset
+    (OSM-stitched) covered those chunks, so we splice the v2 master
+    polyline back in by matching v3 segment endpoints to nearest v2
+    points.
+
+    Modifies `segments` in place. Returns the number of segments touched.
+    """
+    v2_path = OUT_PATH.parent / "at_data_v2.json"
+    if not v2_path.exists():
+        return 0
+    try:
+        v2 = json.loads(v2_path.read_text())
+    except Exception:
+        return 0
+    # Build the v2 master polyline (concatenate seg geoms, dedupe consecutive).
+    v2_master = []
+    for s in v2.get("segments", []):
+        for p in s.get("geom", []):
+            if not v2_master or v2_master[-1] != p:
+                v2_master.append(p)
+    if len(v2_master) < 2:
+        return 0
+
+    def hop_km(a, b):
+        return hav_km((a[0], a[1]), (b[0], b[1]))
+
+    def needs_backfill(geom):
+        if not geom or len(geom) < 2:
+            return False
+        if len(geom) == 2:
+            return hop_km(geom[0], geom[1]) > 0.5
+        for i in range(len(geom) - 1):
+            if hop_km(geom[i], geom[i + 1]) > 1.0:
+                return True
+        return False
+
+    def nearest_idx(p, pts):
+        best_i = 0
+        best_d = float("inf")
+        for i, q in enumerate(pts):
+            d = hop_km(p, q)
+            if d < best_d:
+                best_d = d
+                best_i = i
+        return best_i, best_d
+
+    touched = 0
+    for s in segments:
+        geom = s.get("geom") or []
+        if not needs_backfill(geom):
+            continue
+        i0, d0 = nearest_idx(geom[0], v2_master)
+        i1, d1 = nearest_idx(geom[-1], v2_master)
+        # Endpoint matching can be loose — v2 and v3 use different break
+        # points (so the same "shelter" or "road crossing" lat/lon may
+        # differ by several km). Allow up to 10 km on either side.
+        if d0 > 10.0 or d1 > 10.0:
+            continue
+        if abs(i0 - i1) < 2:
+            continue
+        if i0 < i1:
+            sliced = v2_master[i0 : i1 + 1]
+        else:
+            sliced = list(reversed(v2_master[i1 : i0 + 1]))
+        if len(sliced) < 3:
+            continue
+        # The spliced trail miles should be roughly comparable to the
+        # segment's claimed miles. Allow 30%-300% to accommodate v2/v3
+        # break-point differences without accepting wildly wrong slices.
+        spliced_km = sum(hop_km(sliced[k], sliced[k + 1]) for k in range(len(sliced) - 1))
+        spliced_mi = spliced_km / 1.609
+        claimed_mi = s.get("miles", 0)
+        if claimed_mi > 0 and (spliced_mi < 0.3 * claimed_mi or spliced_mi > 3.0 * claimed_mi):
+            continue
+        s["geom"] = [[round(c[0], 5), round(c[1], 5)] for c in sliced]
+        touched += 1
+    return touched
+
+
 def main_nps():
     """V3 build pipeline driven by NPS APPA data.
 
@@ -1043,6 +1127,16 @@ def main_nps():
         })
         seg_id += 1
     print(f"segments built: {len(out_segments)}")
+
+    # 5b. Backfill segment geometry from the v2 OSM master polyline for any
+    # segment whose v3 geom is sparse or has internal straight-line jumps.
+    # The NPS APPA Treadway feed is missing entire trail-club chunks
+    # (notably around Daleville VA and parts of PA/NH), which left ~104
+    # segments rendering as multi-mile straight bridges. v2 has those
+    # chunks since OSM does. Splice them in.
+    backfilled = _backfill_geom_from_v2(out_segments)
+    if backfilled:
+        print(f"backfilled v2 geometry into {backfilled} sparse v3 segments")
 
     # 6. Build state list with cumulative miles per state
     state_miles = {}
