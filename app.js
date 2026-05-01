@@ -1821,38 +1821,65 @@
   }
   // ---- Pack share / import ----
   // Encode the entire pack (items array, including names + notes) into a
-  // URL-safe base64 string. JSON-then-btoa is good enough; the base64
-  // expansion is ~1.33× and a typical pack of ~30 items lands well under
-  // 5 KB even after encoding, fits comfortably in a URL.
+  // URL-safe compressed string. LZ-string's compressToEncodedURIComponent
+  // produces a base64url-friendly output and runs ~3-5× smaller than raw
+  // base64 JSON, which keeps a 30-item pack URL under ~1.5 KB instead of
+  // 5 KB — safely below SMS, Slack, and most forum length limits.
+  // Falls back to raw base64 if LZ-string failed to load (CDN hiccup).
+  function _packPlainEncode(json) {
+    return btoa(unescape(encodeURIComponent(json)));
+  }
+  function _packPlainDecode(s) {
+    return decodeURIComponent(escape(atob(s)));
+  }
+  function _sanitizePack(obj) {
+    if (!obj || !Array.isArray(obj.items)) return null;
+    // Defensively filter to known shape so a malicious or malformed link
+    // can't inject arbitrary keys that surface elsewhere in the app.
+    const items = obj.items
+      .filter((x) => x && typeof x === "object")
+      .map((x) => ({
+        id: typeof x.id === "string" ? x.id : newPackItemId(),
+        name: String(x.name || "").slice(0, 200),
+        weight_oz: Math.max(0, Math.min(10000, Number(x.weight_oz) || 0)),
+        category: PACK_CATEGORIES.find((c) => c.id === x.category) ? x.category : "misc",
+        condition: PACK_CONDITIONS.find((c) => c.id === x.condition) ? x.condition : "good",
+        worn: !!x.worn,
+        consumable: !!x.consumable,
+        notes: String(x.notes || "").slice(0, 1000),
+      }));
+    return { items };
+  }
   function encodePack(p) {
     try {
       const json = JSON.stringify({ items: (p && p.items) || [] });
-      return btoa(unescape(encodeURIComponent(json)));
+      if (typeof LZString !== "undefined" && LZString.compressToEncodedURIComponent) {
+        return LZString.compressToEncodedURIComponent(json);
+      }
+      return _packPlainEncode(json);
     } catch (e) {
       return "";
     }
   }
   function decodePack(s) {
     if (!s) return null;
+    // Try LZ-string first (current format). If that comes back empty/null
+    // — either because the input is the older base64 format, or LZ-string
+    // didn't load — fall back to raw base64. This keeps pre-LZ share URLs
+    // working forever.
+    let json = null;
+    if (typeof LZString !== "undefined" && LZString.decompressFromEncodedURIComponent) {
+      try {
+        const out = LZString.decompressFromEncodedURIComponent(s);
+        if (out) json = out;
+      } catch (e) {}
+    }
+    if (!json) {
+      try { json = _packPlainDecode(s); } catch (e) { return null; }
+    }
+    if (!json) return null;
     try {
-      const json = decodeURIComponent(escape(atob(s)));
-      const obj = JSON.parse(json);
-      if (!obj || !Array.isArray(obj.items)) return null;
-      // Defensively filter to known shape so a malicious link can't inject
-      // arbitrary keys that surface elsewhere in the app.
-      const items = obj.items
-        .filter((x) => x && typeof x === "object")
-        .map((x) => ({
-          id: typeof x.id === "string" ? x.id : newPackItemId(),
-          name: String(x.name || "").slice(0, 200),
-          weight_oz: Math.max(0, Math.min(10000, Number(x.weight_oz) || 0)),
-          category: PACK_CATEGORIES.find((c) => c.id === x.category) ? x.category : "misc",
-          condition: PACK_CONDITIONS.find((c) => c.id === x.condition) ? x.condition : "good",
-          worn: !!x.worn,
-          consumable: !!x.consumable,
-          notes: String(x.notes || "").slice(0, 1000),
-        }));
-      return { items };
+      return _sanitizePack(JSON.parse(json));
     } catch (e) {
       return null;
     }
