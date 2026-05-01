@@ -1774,6 +1774,147 @@
     const delBtn = e.target.closest("[data-pack-delete]");
     if (delBtn) { e.preventDefault(); packDelete(delBtn.dataset.packDelete); return; }
   }
+  // ---- Pack share / import ----
+  // Encode the entire pack (items array, including names + notes) into a
+  // URL-safe base64 string. JSON-then-btoa is good enough; the base64
+  // expansion is ~1.33× and a typical pack of ~30 items lands well under
+  // 5 KB even after encoding, fits comfortably in a URL.
+  function encodePack(p) {
+    try {
+      const json = JSON.stringify({ items: (p && p.items) || [] });
+      return btoa(unescape(encodeURIComponent(json)));
+    } catch (e) {
+      return "";
+    }
+  }
+  function decodePack(s) {
+    if (!s) return null;
+    try {
+      const json = decodeURIComponent(escape(atob(s)));
+      const obj = JSON.parse(json);
+      if (!obj || !Array.isArray(obj.items)) return null;
+      // Defensively filter to known shape so a malicious link can't inject
+      // arbitrary keys that surface elsewhere in the app.
+      const items = obj.items
+        .filter((x) => x && typeof x === "object")
+        .map((x) => ({
+          id: typeof x.id === "string" ? x.id : newPackItemId(),
+          name: String(x.name || "").slice(0, 200),
+          weight_oz: Math.max(0, Math.min(10000, Number(x.weight_oz) || 0)),
+          category: PACK_CATEGORIES.find((c) => c.id === x.category) ? x.category : "misc",
+          condition: PACK_CONDITIONS.find((c) => c.id === x.condition) ? x.condition : "good",
+          worn: !!x.worn,
+          consumable: !!x.consumable,
+          notes: String(x.notes || "").slice(0, 1000),
+        }));
+      return { items };
+    } catch (e) {
+      return null;
+    }
+  }
+  function buildPackShareURL(p) {
+    const code = encodePack(p);
+    if (!code) return "";
+    const params = new URLSearchParams();
+    params.set("pk", code);
+    return `${location.origin}${location.pathname}#${params.toString()}`;
+  }
+  function buildPackTextSummary(p) {
+    const items = (p && p.items) || [];
+    const t = computePackTotals(items);
+    const lines = [];
+    lines.push(`Pack — ${activeProfile}`);
+    lines.push(`Total: ${ozToLb(t.total)} lb (${t.total.toFixed(1)} oz)`);
+    lines.push(`Base: ${ozToLb(t.base)} lb · Worn: ${ozToLb(t.worn)} lb · Consumables: ${ozToLb(t.consumable)} lb`);
+    if (items.length === 0) {
+      lines.push("");
+      lines.push("(empty pack)");
+      return lines.join("\n");
+    }
+    const byCat = new Map();
+    for (const it of items) {
+      const k = it.category || "misc";
+      if (!byCat.has(k)) byCat.set(k, []);
+      byCat.get(k).push(it);
+    }
+    for (const cat of PACK_CATEGORIES) {
+      const cIts = byCat.get(cat.id);
+      if (!cIts || cIts.length === 0) continue;
+      lines.push("");
+      lines.push(cat.label.toUpperCase());
+      for (const it of cIts) {
+        const flags = [];
+        if (it.worn) flags.push("worn");
+        if (it.consumable) flags.push("consumable");
+        const flagsText = flags.length ? ` [${flags.join(", ")}]` : "";
+        const cond = packCondInfo(it.condition || "good");
+        lines.push(`- ${it.name}${flagsText} — ${(Number(it.weight_oz) || 0).toFixed(1)} oz · ${cond.label}`);
+        if (it.notes) lines.push(`  ${it.notes}`);
+      }
+    }
+    return lines.join("\n");
+  }
+  function openSharePack() {
+    if (!pack.items || pack.items.length === 0) {
+      alert("Your pack is empty — nothing to share. Add some items first.");
+      return;
+    }
+    $("share-pack-url").value = buildPackShareURL(pack);
+    $("share-pack-text").value = buildPackTextSummary(pack);
+    $("share-pack-modal").classList.add("show");
+  }
+  // Called once at boot if a ?pk=... was found in the URL hash.
+  function showImportPackPrompt(incoming) {
+    if (!incoming || !Array.isArray(incoming.items)) return;
+    const totals = computePackTotals(incoming.items);
+    const curTotals = computePackTotals(pack.items || []);
+    $("import-pack-summary").innerHTML =
+      `<p>This URL contains a pack of <strong>${incoming.items.length}</strong> ` +
+      `item${incoming.items.length === 1 ? "" : "s"}, total <strong>${ozToLb(totals.total)} lb</strong> ` +
+      `(${totals.total.toFixed(1)} oz).</p>` +
+      (pack.items && pack.items.length > 0
+        ? `<p style="color: var(--accent);">Loading it will <strong>replace</strong> your current pack ` +
+          `(${pack.items.length} items, ${ozToLb(curTotals.total)} lb). Your existing items will be lost.</p>`
+        : "<p>Your pack is currently empty.</p>");
+    $("import-pack-preview").value = buildPackTextSummary(incoming);
+    // Stash the decoded pack on the modal element until the user decides.
+    $("import-pack-modal")._pendingPack = incoming;
+    $("import-pack-modal").classList.add("show");
+  }
+  function applyImportPack() {
+    const m = $("import-pack-modal");
+    const incoming = m && m._pendingPack;
+    if (incoming && Array.isArray(incoming.items)) {
+      pack = { items: incoming.items };
+      savePack();
+    }
+    if (m) {
+      m._pendingPack = null;
+      m.classList.remove("show");
+    }
+    // Clean the pk param out of the URL so a refresh doesn't re-prompt.
+    try {
+      const params = new URLSearchParams((location.hash || "").replace(/^#/, ""));
+      params.delete("pk");
+      const hash = params.toString();
+      history.replaceState(null, "", hash ? `#${hash}` : location.pathname);
+    } catch (e) {}
+    if ($("pack-modal")?.classList.contains("show")) renderPack();
+  }
+  function cancelImportPack() {
+    const m = $("import-pack-modal");
+    if (m) {
+      m._pendingPack = null;
+      m.classList.remove("show");
+    }
+    try {
+      const params = new URLSearchParams((location.hash || "").replace(/^#/, ""));
+      params.delete("pk");
+      const hash = params.toString();
+      history.replaceState(null, "", hash ? `#${hash}` : location.pathname);
+    } catch (e) {}
+  }
+
   function populatePackFormSelects() {
     const catSel = $("pack-add-category");
     if (catSel && !catSel.options.length) {
@@ -3837,6 +3978,23 @@
     prefs = loadPrefs();
     // Apply any plan_*=… params in the URL hash (from a "Share plan" link)
     applyURLPlanMeta();
+    // Detect a shared pack in the URL (?pk=… in the hash). Don't auto-load:
+    // open the import modal so the user can preview and confirm replacing
+    // their current pack.
+    try {
+      const params = new URLSearchParams((location.hash || "").replace(/^#/, ""));
+      const pkCode = params.get("pk");
+      if (pkCode) {
+        const incoming = decodePack(pkCode);
+        if (incoming) {
+          // Defer the modal open until after the rest of boot finishes so
+          // the user sees the app is loaded behind it.
+          setTimeout(() => showImportPackPrompt(incoming), 200);
+        }
+      }
+    } catch (e) {
+      console.warn("pack import URL parse failed:", e);
+    }
 
     directionEl.value = prefs.direction;
     viewModeEl.value = prefs.viewMode || "state";
@@ -3999,6 +4157,28 @@
     $("pack-add-submit")?.addEventListener("click", packAddSubmit);
     $("pack-add-cancel-edit")?.addEventListener("click", packCancelEdit);
     $("pack-body")?.addEventListener("click", onPackBodyClick);
+    $("pack-share-btn")?.addEventListener("click", openSharePack);
+    $("share-pack-close")?.addEventListener("click", () => $("share-pack-modal").classList.remove("show"));
+    $("share-pack-copy-url")?.addEventListener("click", () => {
+      const inp = $("share-pack-url");
+      inp.select();
+      navigator.clipboard.writeText(inp.value).catch(() => document.execCommand("copy"));
+      const btn = $("share-pack-copy-url");
+      const orig = btn.textContent;
+      btn.textContent = "Copied!";
+      setTimeout(() => (btn.textContent = orig), 1200);
+    });
+    $("share-pack-copy-text")?.addEventListener("click", () => {
+      const ta = $("share-pack-text");
+      ta.select();
+      navigator.clipboard.writeText(ta.value).catch(() => document.execCommand("copy"));
+      const btn = $("share-pack-copy-text");
+      const orig = btn.textContent;
+      btn.textContent = "Copied!";
+      setTimeout(() => (btn.textContent = orig), 1200);
+    });
+    $("import-pack-cancel")?.addEventListener("click", cancelImportPack);
+    $("import-pack-go")?.addEventListener("click", applyImportPack);
     $("planned-close").addEventListener("click", () => $("planned-modal").classList.remove("show"));
     $("planned-clear").addEventListener("click", clearAllPlanned);
     $("planned-mark-hiked").addEventListener("click", markPlannedAsHiked);

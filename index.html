@@ -1170,7 +1170,38 @@
       </div>
     </form>
     <div class="modal-actions">
+      <button id="pack-share-btn">Share pack</button>
       <button id="pack-close" class="primary">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Share-pack modal: read-only URL + plain-text summary, both copyable -->
+<div class="modal-bg" id="share-pack-modal" style="z-index: 1050;">
+  <div class="modal" style="max-width: 600px;">
+    <h2>Share your pack</h2>
+    <p>Anyone with this URL can open the app and import this pack.</p>
+    <input type="text" id="share-pack-url" readonly />
+    <p style="margin-top: 12px;"><strong>Plain-text summary</strong> (paste into messages, gear lists…):</p>
+    <textarea id="share-pack-text" readonly style="min-height: 240px; font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 11px;"></textarea>
+    <div class="modal-actions">
+      <button id="share-pack-copy-url">Copy URL</button>
+      <button id="share-pack-copy-text">Copy summary</button>
+      <button id="share-pack-close" class="primary">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Import-pack modal: shown when a ?pk=… URL was opened -->
+<div class="modal-bg" id="import-pack-modal" style="z-index: 1060;">
+  <div class="modal" style="max-width: 600px;">
+    <h2>Import pack</h2>
+    <div id="import-pack-summary" style="font-size: 13px;"></div>
+    <p style="margin-top: 8px;"><strong>Preview</strong></p>
+    <textarea id="import-pack-preview" readonly style="min-height: 220px; font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 11px;"></textarea>
+    <div class="modal-actions">
+      <button id="import-pack-cancel">Cancel</button>
+      <button id="import-pack-go" class="primary">Replace my pack</button>
     </div>
   </div>
 </div>
@@ -1306,6 +1337,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=40"></script>
+<script src="app.js?v=41"></script>
 </body>
 </html>
