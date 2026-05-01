@@ -163,11 +163,13 @@
   .state-header .state-stats .done { color: var(--hike); font-weight: 600; }
   /* State header secondary actions — fade in on hover/focus to reduce
      visual noise. They stay reachable via keyboard focus. */
+  /* Default to 50% opacity so the buttons are reachable on touch (no hover);
+     full opacity on hover/focus for desktop discovery. */
   .state-header .state-actions {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    opacity: 0.25;
+    opacity: 0.55;
     transition: opacity .15s ease;
   }
   .state-header:hover .state-actions,
@@ -577,6 +579,17 @@
     letter-spacing: 0.05em;
     padding: 6px 12px 2px;
   }
+  /* Used inside the View-settings popover. Stack labels above their
+     control instead of the filter-bar's inline "label: select" layout. */
+  .overflow-list .settings-row {
+    display: flex; flex-direction: column; gap: 4px;
+    font-size: 12px; color: var(--muted);
+    padding: 6px 0;
+  }
+  .overflow-list .settings-row + .settings-row { border-top: 1px dashed var(--rule); }
+  .overflow-list .settings-row select { font: inherit; font-size: 13px; padding: 4px 6px; border: 1px solid var(--rule); border-radius: 4px; background: var(--input-bg); color: var(--ink); }
+  .overflow-list .settings-row.settings-check { flex-direction: row; align-items: center; gap: 6px; cursor: pointer; }
+  .overflow-list .settings-row.settings-check input { margin: 0; }
 
   /* Identity (profile + auth) consolidated into a single avatar dropdown. */
   .identity-control { position: relative; }
@@ -778,29 +791,35 @@
   <aside id="sidebar">
     <div class="filter-bar">
       <div class="filter-row">
-        <input type="search" id="filter" placeholder="Filter segments / shelters…" />
+        <input type="search" id="filter" placeholder="Filter…" />
         <label><input type="checkbox" id="filter-hiked" /> hiked only</label>
         <label><input type="checkbox" id="filter-planned" /> planned only</label>
         <button id="multi-select-btn" type="button" title="Tap two segments to mark a range" aria-pressed="false" style="font-size: 12px; padding: 4px 8px;">Multi-select</button>
         <button id="add-trip-btn" type="button" title="Pick a start segment, then an end segment, then a date" aria-pressed="false" style="font-size: 12px; padding: 4px 8px;">+ Trip</button>
+        <!-- View settings — set-once knobs that used to live in their own
+             filter row. Tucked behind a cog so the filter bar isn't a
+             cockpit on first open. -->
+        <div class="overflow-menu" id="view-settings">
+          <button class="overflow-trigger" data-menu-trigger title="View settings" aria-haspopup="true" aria-expanded="false" style="font-size: 12px; padding: 4px 8px;">⚙ View</button>
+          <div class="overflow-list" role="menu" style="min-width: 220px; padding: 10px 12px;">
+            <label class="settings-row">View:
+              <select id="view-mode">
+                <option value="state">By state</option>
+                <option value="trip">By trip (date)</option>
+              </select>
+            </label>
+            <label class="settings-row">Direction:
+              <select id="direction">
+                <option value="nobo">SOBO → NOBO</option>
+                <option value="sobo">NOBO → SOBO</option>
+              </select>
+            </label>
+            <label class="settings-row settings-check"><input type="checkbox" id="show-shelters" checked /> Show shelters on map</label>
+            <label class="settings-row settings-check"><input type="checkbox" id="color-by-year" /> Color trail by year hiked</label>
+          </div>
+        </div>
       </div>
       <div id="add-trip-banner" style="display:none;font-size:12px;padding:8px 10px;border-radius:6px;background:var(--plan-bg);color:var(--plan);line-height:1.4;"></div>
-      <div class="filter-row">
-        <label>View:
-          <select id="view-mode">
-            <option value="state">By state</option>
-            <option value="trip">By trip (date)</option>
-          </select>
-        </label>
-        <label>Direction:
-          <select id="direction">
-            <option value="nobo">SOBO → NOBO</option>
-            <option value="sobo">NOBO → SOBO</option>
-          </select>
-        </label>
-        <label><input type="checkbox" id="show-shelters" checked /> shelters</label>
-        <label><input type="checkbox" id="color-by-year" /> color by year</label>
-      </div>
     </div>
     <div id="loading">Loading AT trail data…</div>
     <div id="sections"></div>
@@ -1143,6 +1162,94 @@
   #stats-body .bar-num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
 </style>
 
+<!-- First-run intro overlay. Shown once per device (localStorage flag).
+     Brief tour of the four core actions so a new visitor isn't dumped
+     straight into the full UI with no context. -->
+<div class="modal-bg" id="intro-modal">
+  <div class="modal" style="max-width: 540px;">
+    <h2><span style="color:var(--accent);">⛰</span> Welcome to AT Section Tracker</h2>
+    <p>Track your progress along the 2,194-mile Appalachian Trail, plan upcoming hikes, and manage your pack — all in your browser, no account required.</p>
+    <div class="intro-grid">
+      <div><div class="intro-icon">🥾</div><div class="intro-text"><strong>Mark hiked sections</strong><br><small>Tap a checkbox to log it. Use <strong>+ Trip</strong> to mark a whole stretch in two clicks.</small></div></div>
+      <div><div class="intro-icon">🗓</div><div class="intro-text"><strong>Plan a trip</strong><br><small>Tap the bookmark icon on segments to plan them. <strong>Planned</strong> shows mileage, elevation, difficulty, and a day-by-day itinerary.</small></div></div>
+      <div><div class="intro-icon">🎒</div><div class="intro-text"><strong>Plan your pack</strong><br><small>Open <strong>⋯ More → Pack</strong> to track gear weight and condition. Share or import a pack from a URL.</small></div></div>
+      <div><div class="intro-icon">🔎</div><div class="intro-text"><strong>Search anything</strong><br><small>Press <kbd>/</kbd> or click the magnifier to jump to any peak, town, shelter, or road crossing.</small></div></div>
+    </div>
+    <p style="font-size: 12px; color: var(--muted); margin-top: 12px;">Sign in with Google (top right) to sync across devices. Your data is stored locally otherwise.</p>
+    <div class="modal-actions">
+      <button id="intro-dismiss" class="primary">Get started</button>
+    </div>
+  </div>
+</div>
+
+<style>
+  #intro-modal .intro-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px 16px;
+    margin: 14px 0 6px;
+  }
+  #intro-modal .intro-grid > div {
+    display: flex; gap: 10px;
+    padding: 10px;
+    background: var(--panel-alt);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    line-height: 1.4;
+  }
+  #intro-modal .intro-icon { font-size: 22px; line-height: 1; flex-shrink: 0; }
+  #intro-modal .intro-text { font-size: 12.5px; }
+  #intro-modal .intro-text small { color: var(--muted); }
+  #intro-modal kbd {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11px;
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 1px 5px;
+  }
+  @media (max-width: 540px) {
+    #intro-modal .intro-grid { grid-template-columns: 1fr; }
+  }
+</style>
+
+<!-- Undo toast: appears in the bottom-left after a bulk operation,
+     auto-dismisses in 6s, lets the user revert. -->
+<div id="undo-toast" role="status" aria-live="polite">
+  <span id="undo-toast-msg"></span>
+  <button id="undo-toast-btn" type="button">Undo</button>
+</div>
+
+<style>
+  #undo-toast {
+    position: fixed;
+    left: 16px;
+    bottom: 16px;
+    background: var(--ink);
+    color: var(--bg);
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    display: none;
+    align-items: center;
+    gap: 12px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    z-index: 1200;
+    max-width: 80vw;
+  }
+  #undo-toast.show { display: inline-flex; }
+  #undo-toast button {
+    font: inherit;
+    background: transparent;
+    border: 1px solid var(--bg);
+    color: var(--bg);
+    padding: 3px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  #undo-toast button:hover { background: var(--bg); color: var(--ink); }
+</style>
+
 <!-- Pack planner modal -->
 <div class="modal-bg" id="pack-modal">
   <div class="modal" style="max-width: 720px;">
@@ -1299,9 +1406,13 @@
   .pack-form-flags { display: flex; flex-direction: column; gap: 2px; font-size: 12px; margin-bottom: 8px; }
   .pack-form-flags label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
   .pack-form-actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 4px; }
-  @media (max-width: 600px) {
+  /* Two breakpoints: 760 collapses the form to 2 cols (still visible on
+     laptop dialogs that aren't full-width), 600 stacks per-item rows. */
+  @media (max-width: 760px) {
     .pack-form-grid { grid-template-columns: 1fr 1fr; }
     #pack-body .pack-totals { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 600px) {
     #pack-body .pack-item { grid-template-columns: 1fr auto; }
     #pack-body .pack-item-cond, #pack-body .pack-item-actions { grid-column: span 2; justify-self: end; }
   }
@@ -1337,6 +1448,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=41"></script>
+<script src="app.js?v=42"></script>
 </body>
 </html>

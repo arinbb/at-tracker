@@ -723,7 +723,13 @@
       );
       layer.addTo(map);
       segLayers.set(seg.id, layer);
-      latlngs.forEach((ll) => bounds.extend(ll));
+      // latlngs is now an array of arrays (multi-polyline). Flatten so we
+      // extend bounds by each individual point — otherwise bounds.extend
+      // sees [[lat,lon], [lat,lon], …] and interprets the first two as
+      // LatLngBounds corners, missing the rest of the trail.
+      for (const run of latlngs) {
+        for (const ll of run) bounds.extend(ll);
+      }
     });
     if (bounds.isValid()) {
       requestAnimationFrame(() => {
@@ -1049,6 +1055,18 @@
       s -= Math.min(20, t.length / 4);
       return s;
     };
+    // Normalize a name for dedupe: lowercase, strip common variant
+    // suffixes ("Summit", "Overlook", "Parking Area", trailing digits)
+    // so "McAfee Knob", "McAfee Knob Summit", "McAfee Knob 2",
+    // "McAfee Knob Overlook" all collapse to "mcafee knob".
+    const normalizeName = (n) => {
+      return String(n || "")
+        .toLowerCase()
+        .replace(/\b(summit|overlook|viewpoint|view|peak|parking(\s+area)?|trailhead|area|north|south|east|west)\b/g, "")
+        .replace(/\s*[-#]?\s*\d+\s*$/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    };
     // Features
     if (FEATURES) {
       for (const f of FEATURES.features) {
@@ -1058,11 +1076,17 @@
         const ctxBits = [];
         if (f.parent_town) ctxBits.push(f.parent_town);
         if (typeof f._mile === "number" && f._mile > 0) ctxBits.push(`mi ${f._mile.toFixed(0)}`);
+        // Bucket key: normalized name + 1mi mile bucket (or rounded
+        // lat/lon if no mile). Used downstream to fold near-duplicates.
+        const mileBucket = (typeof f._mile === "number" && f._mile > 0)
+          ? Math.round(f._mile)
+          : `${(f.lat || 0).toFixed(2)},${(f.lon || 0).toFixed(2)}`;
         results.push({
           score: s,
           icon: cfg ? cfg.emoji : "📍",
           name: f.name,
           ctx: ctxBits.join(" · "),
+          dedupeKey: `${normalizeName(f.name)}@${mileBucket}`,
           action: () => { closeSearch(); focusFeatureOnMap(f.id); },
         });
       }
@@ -1098,7 +1122,18 @@
       }
     }
     results.sort((a, b) => b.score - a.score);
-    return results.slice(0, 30);
+    // Dedupe: keep the highest-scoring result per (normalized name, mile)
+    // bucket. Without this, "McAfee" returns 7+ near-identical hits from
+    // the various data feeds (NPS vista, peak, parking, lore…).
+    const seen = new Set();
+    const deduped = [];
+    for (const r of results) {
+      const key = r.dedupeKey;
+      if (key && seen.has(key)) continue;
+      if (key) seen.add(key);
+      deduped.push(r);
+    }
+    return deduped.slice(0, 30);
   }
   function renderSearchResults(q) {
     const out = $("search-results");
@@ -1511,15 +1546,25 @@
     }
     const yearRows = [...byYear.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 
-    // States completed
+    // States completed: use effectiveStateName so NC/TN and NJ/NY are
+    // split into individual states, matching what the sidebar shows.
     const stateProgress = new Map();
     for (const seg of DATA.segments) {
-      if (!stateProgress.has(seg.state)) stateProgress.set(seg.state, { total: 0, done: 0 });
-      const p = stateProgress.get(seg.state);
+      const st = effectiveStateName(seg);
+      if (!stateProgress.has(st)) stateProgress.set(st, { total: 0, done: 0 });
+      const p = stateProgress.get(st);
       p.total += seg.miles;
       if (progress.has(seg.id)) p.done += seg.miles;
     }
-    const stateRows = [...stateProgress.entries()];
+    // Order by canonical south-to-north for display.
+    const STATE_ORDER = [
+      "Georgia", "North Carolina", "Tennessee", "Virginia", "West Virginia",
+      "Maryland", "Pennsylvania", "New Jersey", "New York", "Connecticut",
+      "Massachusetts", "Vermont", "New Hampshire", "Maine",
+    ];
+    const stateRows = [...stateProgress.entries()].sort(
+      (a, b) => (STATE_ORDER.indexOf(a[0]) - STATE_ORDER.indexOf(b[0]))
+    );
     const statesCompleted = stateRows.filter(([, p]) => p.done >= p.total - 0.05).length;
 
     return {
@@ -2274,7 +2319,13 @@
       // Difficulty bar (only when we have elevation)
       if (hasElev) {
         const widthPct = (stress.grade / 10) * 100;
-        html.push(`<div class="diff-bar-row" style="border-color:${stress.color};">` +
+        const gradeTitle = "Difficulty grade 0–10 from average climb per mile.\n" +
+          "Reference points (AT averages):\n" +
+          "  ~150 ft/mi → 3 (Easy)\n" +
+          "  ~250 ft/mi → 5 (Moderate)\n" +
+          "  ~350 ft/mi → 7 (Strenuous)\n" +
+          "  ~500 ft/mi → 9 (Very strenuous, e.g. Whites/Mahoosucs)";
+        html.push(`<div class="diff-bar-row" style="border-color:${stress.color};" title="${escapeHtml(gradeTitle)}">` +
           `<div class="grade" style="color:${stress.color};">${stress.grade.toFixed(1)}<span class="of">/10</span></div>` +
           `<div class="meta"><div class="label" style="color:${stress.color};">${stress.label}</div>` +
             `<div class="track"><div class="fill" style="width:${widthPct}%;background:${stress.color};"></div></div></div>` +
@@ -2817,6 +2868,73 @@
     applyTheme();
   }
 
+  // -------- First-run intro --------
+  // Shown once per device. The flag survives clearing localStorage of trail
+  // data because it lives on its own key.
+  const INTRO_FLAG = "at-tracker-seen-intro";
+  function maybeShowIntro() {
+    try {
+      if (safeGet(INTRO_FLAG)) return;
+      // Defer past initial paint so the app is visible behind the modal.
+      setTimeout(() => $("intro-modal")?.classList.add("show"), 400);
+    } catch (e) {}
+  }
+  function dismissIntro() {
+    safeSet(INTRO_FLAG, "1");
+    $("intro-modal")?.classList.remove("show");
+  }
+
+  // -------- Undo toast --------
+  // Used after destructive bulk operations (✓ all, ✕ all). Snapshots the
+  // affected progress entries; clicking Undo restores them.
+  let _undoTimer = null;
+  let _undoState = null; // { snapshot: Map<id,date|null>, msg }
+  function showUndoToast(msg, restoreFn, durationMs) {
+    clearTimeout(_undoTimer);
+    _undoState = { restoreFn };
+    const t = $("undo-toast");
+    if (!t) return;
+    $("undo-toast-msg").textContent = msg;
+    t.classList.add("show");
+    _undoTimer = setTimeout(hideUndoToast, durationMs || 6000);
+  }
+  function hideUndoToast() {
+    clearTimeout(_undoTimer);
+    _undoTimer = null;
+    _undoState = null;
+    $("undo-toast")?.classList.remove("show");
+  }
+  function performUndo() {
+    if (!_undoState || typeof _undoState.restoreFn !== "function") {
+      hideUndoToast();
+      return;
+    }
+    try {
+      _undoState.restoreFn();
+    } catch (e) {
+      console.warn("undo failed:", e);
+    }
+    hideUndoToast();
+    saveProgress();
+    updateStats();
+    refreshMapStyles();
+    renderSections();
+  }
+  // Snapshot the progress entries for a given list of seg IDs.
+  function snapshotProgress(ids) {
+    const m = new Map();
+    for (const id of ids) {
+      m.set(id, progress.has(id) ? progress.get(id) : null);
+    }
+    return m;
+  }
+  function restoreProgressSnapshot(snap) {
+    for (const [id, val] of snap) {
+      if (val === null || val === undefined) progress.delete(id);
+      else progress.set(id, val);
+    }
+  }
+
   // -------- Segment toggling --------
   function toggleSegment(id, checked, date) {
     if (checked) {
@@ -2835,8 +2953,8 @@
   }
 
   // -------- Bulk-date modal --------
-  function openBulkDate(ids, makeChecked) {
-    pendingBulkRange = { ids, checked: makeChecked };
+  function openBulkDate(ids, makeChecked, undoLabel) {
+    pendingBulkRange = { ids, checked: makeChecked, undoLabel };
     $("bulk-date-count").textContent = ids.length;
     $("bulk-date-input").value = todayISO();
     $("bulk-date-input").max = todayISO();
@@ -2844,7 +2962,10 @@
   }
   function applyBulkDate(date) {
     if (!pendingBulkRange) return;
-    const { ids, checked } = pendingBulkRange;
+    const { ids, checked, undoLabel } = pendingBulkRange;
+    // Snapshot every affected seg's progress entry BEFORE the change so
+    // the Undo toast can revert if the user mis-tapped.
+    const snap = snapshotProgress(ids);
     for (const id of ids) toggleSegment(id, checked, date);
     pendingBulkRange = null;
     $("bulk-date-modal").classList.remove("show");
@@ -2853,6 +2974,11 @@
     updateStats();
     refreshMapStyles();
     if (typeof pendingApplyAfterHook === "function") pendingApplyAfterHook();
+    if (ids.length >= 2) {
+      const msg = undoLabel
+        || (checked ? `Marked ${ids.length} sections hiked` : `Cleared ${ids.length} sections`);
+      showUndoToast(msg, () => restoreProgressSnapshot(snap));
+    }
   }
 
   // -------- Event handlers --------
@@ -2929,12 +3055,12 @@
         return;
       }
       const ids = segs.map((s) => s.id);
-      openBulkDate(ids, true);
+      openBulkDate(ids, true, `Marked ${ids.length} sections in ${stateName} hiked`);
       return;
     }
     // Clear hiked status on every section in a state. Confirms first
-    // since this is destructive (drops dates + notes are kept on the
-    // segment but no longer visible since the row collapses).
+    // since this is destructive. Also queues an Undo toast so the change
+    // can be reverted if it was a mis-tap.
     const clearBtn = e.target.closest("[data-clear-state]");
     if (clearBtn) {
       e.preventDefault();
@@ -2954,11 +3080,16 @@
       );
       if (!ok) return;
       const ids = segs.map((s) => s.id);
+      const snap = snapshotProgress(ids);
       for (const id of ids) toggleSegment(id, false);
       saveProgress();
       updateStats();
       refreshMapStyles();
       renderSections();
+      showUndoToast(
+        `Cleared ${ids.length} sections in ${stateName}`,
+        () => restoreProgressSnapshot(snap)
+      );
       return;
     }
     const chunkHeader = e.target.closest(".chunk-header");
@@ -4009,6 +4140,7 @@
     renderSections();
     updateStats();
     refreshMapStyles();
+    maybeShowIntro();
 
     sectionsEl.addEventListener("click", onSidebarClick);
     sectionsEl.addEventListener("change", onSidebarChange);
@@ -4179,6 +4311,9 @@
     });
     $("import-pack-cancel")?.addEventListener("click", cancelImportPack);
     $("import-pack-go")?.addEventListener("click", applyImportPack);
+    // First-run intro + global undo toast
+    $("intro-dismiss")?.addEventListener("click", dismissIntro);
+    $("undo-toast-btn")?.addEventListener("click", performUndo);
     $("planned-close").addEventListener("click", () => $("planned-modal").classList.remove("show"));
     $("planned-clear").addEventListener("click", clearAllPlanned);
     $("planned-mark-hiked").addEventListener("click", markPlannedAsHiked);
