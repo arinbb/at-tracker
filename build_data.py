@@ -32,6 +32,7 @@ STATES = [
 ]
 
 OUT_PATH = Path(__file__).parent / "at_data.json"
+KMZ_PATH = Path(__file__).parent / "at_kmz_source.kmz"
 CACHE_DIR = Path(__file__).parent / ".cache"
 CACHE_DIR.mkdir(exist_ok=True)
 ELEV_CACHE = CACHE_DIR / "elev.json"
@@ -944,6 +945,327 @@ def _backfill_geom_from_v2(segments):
     return touched
 
 
+def parse_kmz(kmz_path):
+    """Extract 44 trail paths + ~866 POIs from a KMZ file.
+
+    Returns: {"paths": [{name, coords, folder}], "pois": {folder: [{name,lat,lon}]}}
+    Coords are (lon, lat) tuples to match the rest of this file's convention.
+    """
+    import zipfile
+    import xml.etree.ElementTree as ET
+    with zipfile.ZipFile(kmz_path) as z:
+        kml_name = next(n for n in z.namelist() if n.endswith(".kml"))
+        with z.open(kml_name) as f:
+            tree = ET.parse(f)
+    ns = {"k": "http://www.opengis.net/kml/2.2"}
+    root = tree.getroot()
+    paths, pois = [], {}
+    for folder in root.iter("{http://www.opengis.net/kml/2.2}Folder"):
+        name_el = folder.find("k:name", ns)
+        if name_el is None or name_el.text is None:
+            continue
+        fname = name_el.text
+        for pm in folder.findall("k:Placemark", ns):
+            pm_name_el = pm.find("k:name", ns)
+            pm_name = pm_name_el.text if pm_name_el is not None else ""
+            ls = pm.find("k:LineString/k:coordinates", ns)
+            pt = pm.find("k:Point/k:coordinates", ns)
+            if ls is not None and ls.text:
+                coords = []
+                for tok in ls.text.strip().split():
+                    parts = tok.split(",")
+                    if len(parts) >= 2:
+                        try:
+                            coords.append((float(parts[0]), float(parts[1])))
+                        except ValueError:
+                            pass
+                if coords:
+                    paths.append({"name": pm_name, "coords": coords, "folder": fname})
+            elif pt is not None and pt.text:
+                parts = pt.text.strip().split(",")
+                if len(parts) >= 2:
+                    try:
+                        pois.setdefault(fname, []).append({
+                            "name": pm_name,
+                            "lon": float(parts[0]),
+                            "lat": float(parts[1]),
+                        })
+                    except ValueError:
+                        pass
+    return {"paths": paths, "pois": pois}
+
+
+def _build_kmz_master(paths):
+    """Greedy nearest-endpoint chain of KMZ paths into one south-to-north line.
+
+    The 44 KMZ paths are independent; the file order isn't guaranteed and any
+    individual path may be reversed. Pick the southernmost-endpoint path as
+    seed, then walk: for each unused path, choose the one whose head OR tail
+    is closest to the running master's tail; reverse if needed; concatenate.
+    """
+    if not paths:
+        return []
+    remaining = list(paths)
+    # Seed with the path whose southernmost endpoint is the lowest of all.
+    def south_lat(p):
+        return min(p["coords"][0][1], p["coords"][-1][1])
+    remaining.sort(key=south_lat)
+    seed = remaining.pop(0)
+    master = list(seed["coords"])
+    if master[0][1] > master[-1][1]:
+        master.reverse()
+    while remaining:
+        tail = master[-1]
+        best_i, best_d, best_action = -1, float("inf"), "forward"
+        for i, p in enumerate(remaining):
+            head = p["coords"][0]
+            ptail = p["coords"][-1]
+            d_head = hav_km(tail, head)
+            d_tail = hav_km(tail, ptail)
+            if d_head <= d_tail and d_head < best_d:
+                best_d, best_i, best_action = d_head, i, "forward"
+            elif d_tail < best_d:
+                best_d, best_i, best_action = d_tail, i, "reverse"
+        if best_i < 0:
+            break
+        p = remaining.pop(best_i)
+        seg = p["coords"] if best_action == "forward" else list(reversed(p["coords"]))
+        if best_d < 0.001:
+            master.extend(seg[1:])
+        else:
+            master.extend(seg)
+    return master
+
+
+def _build_spatial_index(points, cell_deg=0.005):
+    """Index a list of points by integer cell key for fast nearest-lookup."""
+    grid = {}
+    for i, p in enumerate(points):
+        key = (int(p[0] // cell_deg), int(p[1] // cell_deg))
+        grid.setdefault(key, []).append(i)
+    return grid
+
+
+def _nearest_in_grid(query, points, grid, cell_deg=0.005, search_radius=2):
+    """Return (index, distance_km) of the nearest point to query."""
+    cx, cy = int(query[0] // cell_deg), int(query[1] // cell_deg)
+    best_i, best_d = -1, float("inf")
+    for dx in range(-search_radius, search_radius + 1):
+        for dy in range(-search_radius, search_radius + 1):
+            for i in grid.get((cx + dx, cy + dy), []):
+                d = hav_km(query, points[i])
+                if d < best_d:
+                    best_d = d
+                    best_i = i
+    return best_i, best_d
+
+
+def _snap_kmz_to_nps(kmz_master, nps_master, threshold_m=100):
+    """Snap each KMZ master point to the nearest NPS point if within threshold.
+
+    Result: a hybrid polyline that follows the KMZ structure but uses NPS
+    coordinates wherever the two datasets agree on the trail location.
+    Where NPS data is missing (e.g. Daleville gap) the KMZ point is kept.
+    """
+    if not nps_master:
+        return list(kmz_master), 0
+    grid = _build_spatial_index(nps_master)
+    threshold_km = threshold_m / 1000.0
+    out = []
+    snapped = 0
+    for kp in kmz_master:
+        idx, d = _nearest_in_grid(kp, nps_master, grid, search_radius=1)
+        if idx >= 0 and d < threshold_km:
+            out.append(nps_master[idx])
+            snapped += 1
+        else:
+            out.append(kp)
+    return out, snapped
+
+
+def _project_pois_to_master(pois, master_coords, cum_mi, threshold_m=500):
+    """For each POI, find its mile-along-trail by projection. Drop far-off POIs."""
+    grid = _build_spatial_index(master_coords)
+    threshold_km = threshold_m / 1000.0
+    out = []
+    for poi in pois:
+        idx, d = _nearest_in_grid((poi["lon"], poi["lat"]), master_coords, grid, search_radius=4)
+        if idx >= 0 and d < threshold_km:
+            out.append({**poi, "mi": cum_mi[idx], "off_trail_km": d})
+    return out
+
+
+def _assign_states_from_v2(segments):
+    """Stamp each v4 segment with the state of its nearest v2 segment midpoint.
+
+    The v2 OSM dataset got states by which OSM relation a segment came from,
+    which is the most authoritative geographic assignment we have. v3's
+    mile-threshold approach failed because the master polyline isn't
+    monotonic. Lat/lon proximity is reliable.
+    """
+    v2_path = OUT_PATH.parent / "at_data_v2.json"
+    if not v2_path.exists():
+        return 0
+    v2 = json.loads(v2_path.read_text())
+    anchors = []
+    for s in v2.get("segments", []):
+        g = s.get("geom") or []
+        if not g:
+            continue
+        mp = g[len(g) // 2]
+        anchors.append((mp, s.get("state", "?")))
+    if not anchors:
+        return 0
+    grid = _build_spatial_index([a[0] for a in anchors], cell_deg=0.05)
+    n = 0
+    for s in segments:
+        g = s.get("geom") or []
+        if not g:
+            continue
+        mp = g[len(g) // 2]
+        idx, _ = _nearest_in_grid(mp, [a[0] for a in anchors], grid, cell_deg=0.05, search_radius=4)
+        if idx >= 0:
+            s["state"] = anchors[idx][1]
+            n += 1
+    return n
+
+
+def main_kmz():
+    """V4 build pipeline: KMZ structure + NPS Treadway precision blend.
+
+    Adopts the community-curated AT KMZ as the authoritative trail structure
+    (44 named landmark-to-landmark paths, 866 organized POIs) and snaps its
+    geometry to the NPS APPA Treadway feed wherever the two agree (within
+    100 m), so we get the KMZ's clean topology + NPS's GIS precision. Falls
+    back to the KMZ point alone where NPS has no nearby coverage (the
+    Daleville/Pearisburg/NH-Maine gaps).
+
+    Breakpoints come from the KMZ's shelter and road folders (240 + 54).
+    State assignments come from v2 OSM relation membership via lat/lon
+    proximity, which is monotonic in space and avoids the mile-threshold
+    bugs that plagued v3.
+    """
+    print("=== STEP 1: Parse KMZ source ===")
+    if not KMZ_PATH.exists():
+        raise SystemExit(f"missing KMZ at {KMZ_PATH}")
+    kmz = parse_kmz(KMZ_PATH)
+    print(f"  paths: {len(kmz['paths'])}")
+    for fname in sorted(kmz["pois"]):
+        print(f"  POIs[{fname}]: {len(kmz['pois'][fname])}")
+
+    print("=== STEP 2: Chain KMZ paths into south->north master ===")
+    kmz_master = _build_kmz_master(kmz["paths"])
+    raw_total_km = sum(hav_km(kmz_master[i], kmz_master[i + 1]) for i in range(len(kmz_master) - 1))
+    print(f"  KMZ master coords: {len(kmz_master)}, length: {raw_total_km / 1.609:.1f} mi")
+
+    print("=== STEP 3: Snap to NPS Treadway (blend) ===")
+    treadway_geojson = fetch_appa_layer("treadway")
+    nps_master = stitch_treadway(treadway_geojson)
+    print(f"  NPS master coords: {len(nps_master)}")
+    blended_master, snapped = _snap_kmz_to_nps(kmz_master, nps_master, threshold_m=100)
+    pct = (100.0 * snapped / max(1, len(blended_master)))
+    blended_total_km = sum(hav_km(blended_master[i], blended_master[i + 1]) for i in range(len(blended_master) - 1))
+    print(f"  snapped {snapped}/{len(blended_master)} points to NPS ({pct:.1f}%)")
+    print(f"  blended length: {blended_total_km / 1.609:.1f} mi")
+
+    cum_mi = [0.0]
+    for i in range(1, len(blended_master)):
+        cum_mi.append(cum_mi[-1] + hav_km(blended_master[i - 1], blended_master[i]) / 1.609)
+    total_mi = cum_mi[-1]
+
+    print("=== STEP 4: Project KMZ POIs to master miles ===")
+    shelter_pois = kmz["pois"].get("shelters", [])
+    road_pois = kmz["pois"].get("roads", [])
+    shelters = _project_pois_to_master(shelter_pois, blended_master, cum_mi, threshold_m=500)
+    roads = _project_pois_to_master(road_pois, blended_master, cum_mi, threshold_m=500)
+    print(f"  shelters on trail: {len(shelters)}/{len(shelter_pois)}")
+    print(f"  road crossings on trail: {len(roads)}/{len(road_pois)}")
+
+    breakpoints = [{"name": "Springer Mountain (Trail Start)", "mi": 0.0, "kind": "border"}]
+    for sh in shelters:
+        breakpoints.append({"name": sh["name"], "mi": sh["mi"], "kind": "shelter", "lat": sh["lat"], "lon": sh["lon"]})
+    for rd in roads:
+        breakpoints.append({"name": rd["name"], "mi": rd["mi"], "kind": "crossing", "lat": rd["lat"], "lon": rd["lon"]})
+    breakpoints.append({"name": "Mount Katahdin (Trail End)", "mi": total_mi, "kind": "border"})
+    breakpoints.sort(key=lambda b: b["mi"])
+    collapsed = []
+    for b in breakpoints:
+        if collapsed and abs(collapsed[-1]["mi"] - b["mi"]) < 0.05:
+            if b["name"] != collapsed[-1]["name"]:
+                collapsed[-1] = {**collapsed[-1], "name": f"{collapsed[-1]['name']} / {b['name']}", "kind": "combined"}
+            continue
+        collapsed.append(b)
+    breakpoints = collapsed
+    print(f"  total breakpoints (post-dedup): {len(breakpoints)}")
+
+    print("=== STEP 5: Build segments + elevation ===")
+    elev_cache = load_elev_cache()
+    out_segments = []
+    seg_id = 0
+    for i in range(len(breakpoints) - 1):
+        a = breakpoints[i]
+        b = breakpoints[i + 1]
+        if b["mi"] - a["mi"] < 0.05:
+            continue
+        sub = slice_along(blended_master, cum_mi, a["mi"], b["mi"])
+        sub = simplify(sub, tol_deg=0.00015)
+        elevs_m = fetch_elevations(sub, elev_cache)
+        gain_m, loss_m = smooth_and_compute_gain_loss(elevs_m)
+        ft_per_m = 3.28084
+        out_segments.append({
+            "id": seg_id,
+            "state": "?",
+            "from": a["name"],
+            "to": b["name"],
+            "miles": round(b["mi"] - a["mi"], 2),
+            "elev_gain": round(gain_m * ft_per_m, 1),
+            "elev_loss": round(loss_m * ft_per_m, 1),
+            "geom": [[round(c[0], 5), round(c[1], 5)] for c in sub],
+        })
+        seg_id += 1
+    print(f"  segments built: {len(out_segments)}")
+    save_elev_cache(elev_cache)
+
+    print("=== STEP 6: Assign states via v2 anchors ===")
+    n_assigned = _assign_states_from_v2(out_segments)
+    print(f"  assigned: {n_assigned}/{len(out_segments)}")
+
+    state_miles = {}
+    for s in out_segments:
+        state_miles[s["state"]] = state_miles.get(s["state"], 0) + s["miles"]
+    canonical_order = [
+        "Georgia", "North Carolina/Tennessee", "Virginia", "West Virginia",
+        "Maryland", "Pennsylvania", "New Jersey/New York", "Connecticut",
+        "Massachusetts", "Vermont", "New Hampshire", "Maine",
+    ]
+    out_states = [
+        {"name": st, "order": canonical_order.index(st) if st in canonical_order else 99, "miles": round(m, 1)}
+        for st, m in state_miles.items()
+    ]
+    out_states.sort(key=lambda x: x["order"])
+
+    out_shelters = [{"name": s["name"], "lat": s["lat"], "lon": s["lon"]} for s in shelters]
+    out_crossings = [{"label": c["name"], "lat": c["lat"], "lon": c["lon"]} for c in roads]
+    bundle = {
+        "version": 4,
+        "generated": time.strftime("%Y-%m-%d"),
+        "source": "AT KMZ (community-curated) + NPS APPA Treadway snap-fill",
+        "states": out_states,
+        "segments": out_segments,
+        "shelters": out_shelters,
+        "crossings": out_crossings,
+    }
+    OUT_PATH.write_text(json.dumps(bundle, separators=(",", ":")))
+    total = sum(s["miles"] for s in out_segments)
+    print(f"\n=== DONE ===")
+    print(f"wrote {OUT_PATH} - {OUT_PATH.stat().st_size // 1024} KB")
+    print(f"states={len(out_states)} segments={len(out_segments)} shelters={len(out_shelters)} crossings={len(out_crossings)}")
+    print(f"total mileage: {total:.1f} mi")
+    print("\nState breakdown:")
+    for st in out_states:
+        print(f"  {st['name']:25s} {st['miles']:7.1f} mi")
+
+
 def main_nps():
     """V3 build pipeline driven by NPS APPA data.
 
@@ -1395,5 +1717,7 @@ if __name__ == "__main__":
     import sys
     if "--legacy-osm" in sys.argv:
         main()
-    else:
+    elif "--nps" in sys.argv:
         main_nps()
+    else:
+        main_kmz()

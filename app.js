@@ -256,6 +256,113 @@
     }
   }
 
+  // -------- v3 -> v4 user data migration --------
+  // Same shape as v2->v3: read at_data_v3.json (a snapshot saved before the
+  // v4 KMZ-based rebuild), build a remap from each v3 segment's midpoint to
+  // the closest v4 segment by lat/lon, then rewrite every per-profile
+  // progress/planned/notes/trips record. v4 has fewer, larger segments
+  // (~290 vs 629) so multiple v3 IDs may collapse onto one v4 ID — that's
+  // expected, the UI just shows the v4 segment as hiked once any of its
+  // contributing v3 segments was hiked.
+  async function migrateV3ToV4() {
+    let v3;
+    try {
+      const r = await fetch("at_data_v3.json", { cache: "no-cache" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      v3 = await r.json();
+    } catch (e) {
+      console.warn("can't load at_data_v3.json — skipping v3->v4 migration:", e);
+      return;
+    }
+    const v3Segs = v3.segments || [];
+    if (v3Segs.length === 0) return;
+    const v4Index = DATA.segments.map((s) => {
+      const c = s.geom;
+      const m = c[Math.floor(c.length / 2)];
+      return { id: s.id, lon: m[0], lat: m[1] };
+    });
+    function nearestV4SegmentId(midLon, midLat) {
+      let best = null;
+      let bestKm = Infinity;
+      for (const m of v4Index) {
+        const lat0 = (m.lat + midLat) * 0.5 * Math.PI / 180;
+        const dx = (m.lon - midLon) * 111.32 * Math.cos(lat0);
+        const dy = (m.lat - midLat) * 110.574;
+        const km = Math.sqrt(dx * dx + dy * dy);
+        if (km < bestKm) { bestKm = km; best = m; }
+      }
+      return best ? { id: best.id, km: bestKm } : null;
+    }
+    const remap = new Map();
+    for (const s of v3Segs) {
+      if (!s.geom || s.geom.length < 2) continue;
+      const m = s.geom[Math.floor(s.geom.length / 2)];
+      const match = nearestV4SegmentId(m[0], m[1]);
+      // Allow a slightly larger threshold (3 km) since v4 segments are
+      // larger and a v3 midpoint may sit anywhere along its v4 parent.
+      if (match && match.km < 3.0) remap.set(s.id, match.id);
+    }
+    if (remap.size === 0) return;
+    console.warn(`Migrating ${remap.size} v3 -> v4 segment ID mappings...`);
+
+    const profilesList = loadProfileList();
+    for (const profileName of profilesList) {
+      const prog = safeGet(progressKey(profileName));
+      if (prog) {
+        try {
+          const obj = JSON.parse(prog);
+          const newObj = {};
+          for (const [k, v] of Object.entries(obj)) {
+            const newId = remap.get(Number(k));
+            // If multiple v3 ids map to the same v4 id, keep the earliest date.
+            if (newId != null) {
+              if (!(newId in newObj) || (v && (!newObj[newId] || v < newObj[newId]))) {
+                newObj[newId] = v;
+              }
+            }
+          }
+          safeSet(progressKey(profileName), JSON.stringify(newObj));
+        } catch (e) {}
+      }
+      const pl = safeGet(plannedKey(profileName));
+      if (pl) {
+        try {
+          const arr = [...new Set(JSON.parse(pl).map(Number).map((id) => remap.get(id)).filter((id) => id != null))];
+          safeSet(plannedKey(profileName), JSON.stringify(arr));
+        } catch (e) {}
+      }
+      const nt = safeGet(notesKey(profileName));
+      if (nt) {
+        try {
+          const obj = JSON.parse(nt);
+          const newObj = {};
+          for (const [k, v] of Object.entries(obj)) {
+            const newId = remap.get(Number(k));
+            if (newId != null) {
+              // If multiple v3 notes collapse onto one v4 seg, concatenate.
+              newObj[newId] = newObj[newId] ? `${newObj[newId]}\n---\n${v}` : v;
+            }
+          }
+          safeSet(notesKey(profileName), JSON.stringify(newObj));
+        } catch (e) {}
+      }
+      const tr = safeGet(tripsKey(profileName));
+      if (tr) {
+        try {
+          const obj = JSON.parse(tr);
+          if (Array.isArray(obj.trips)) {
+            for (const t of obj.trips) {
+              if (Array.isArray(t.segs)) {
+                t.segs = [...new Set(t.segs.map(Number).map((id) => remap.get(id)).filter((id) => id != null))];
+              }
+            }
+          }
+          safeSet(tripsKey(profileName), JSON.stringify(obj));
+        } catch (e) {}
+      }
+    }
+  }
+
   // -------- Profiles --------
   function loadProfileList() {
     const raw = safeGet(LS_PROFILES);
@@ -698,17 +805,19 @@
     "Maine": ["Flag of Maine.svg"],
   };
   // Decompose the OSM-relation-pair states into individual states for display.
-  // Cumulative-mile thresholds are conservative approximations because the
-  // AT actually zigzags across NC/TN through the Smokies for ~75 mi; we
-  // assign "North Carolina" up through Davenport Gap and "Tennessee" after.
-  // For NJ/NY the boundary is sharper at the NJ/NY state line.
+  // Use latitude rather than cumulative miles so the split survives a
+  // total-trail-mileage change (e.g. when we swap data sources). The AT
+  // does zigzag NC/TN through the Smokies, so this is a simplification —
+  // but it's good enough for sidebar grouping.
+  //  - NC/TN: split at lat 35.78 (≈Davenport Gap)
+  //  - NJ/NY: split at lat 41.357 (≈NJ/NY state line on the AT)
   function effectiveStateName(seg) {
-    const cum = segCumulative.get(seg.id) || 0;
+    const m = seg.geom && seg.geom.length > 0 ? seg.geom[Math.floor(seg.geom.length / 2)] : null;
     if (seg.state === "North Carolina/Tennessee") {
-      return cum < 240 ? "North Carolina" : "Tennessee";
+      return m && m[1] < 35.78 ? "North Carolina" : "Tennessee";
     }
     if (seg.state === "New Jersey/New York") {
-      return cum < 1322 ? "New Jersey" : "New York";
+      return m && m[1] < 41.357 ? "New Jersey" : "New York";
     }
     return seg.state;
   }
@@ -3355,6 +3464,16 @@
       }
     } catch (e) {
       console.warn("v3 migration failed:", e);
+    }
+    // v3 -> v4 migration (KMZ-blended structure). Independent of v3 flag —
+    // a user who upgraded straight from v2 to v4 still goes through both.
+    try {
+      if ((data.version || 1) >= 4 && !safeGet("at-tracker-migrated-v4")) {
+        await migrateV3ToV4();
+        safeSet("at-tracker-migrated-v4", "1");
+      }
+    } catch (e) {
+      console.warn("v4 migration failed:", e);
     }
 
     // Load wikitrail features (resupply, maildrop, hostel, hotel, restaurant, etc.)
