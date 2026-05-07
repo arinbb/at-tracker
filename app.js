@@ -32,7 +32,6 @@
   const filterPlannedEl = $("filter-planned");
   const directionEl = $("direction");
   const viewModeEl = $("view-mode");
-  const showSheltersEl = $("show-shelters");
   const colorByYearEl = $("color-by-year");
   const profileSelectEl = $("profile-select");
   const statSegs = $("stat-segs");
@@ -958,6 +957,24 @@
         .addTo(shelterLayer);
     });
     if (prefs.showShelters) shelterLayer.addTo(map);
+    // Shelters live in the same Leaflet layers panel as feature pins
+    // (top-right ▤ icon) so all map-layer toggles are in one place.
+    // Keep the prefs.showShelters flag in sync via overlayadd/remove.
+    if (layerControl) {
+      layerControl.addOverlay(shelterLayer, `🛖 Shelters (${DATA.shelters.length})`);
+    }
+    map.on("overlayadd", (e) => {
+      if (e.layer === shelterLayer) {
+        prefs.showShelters = true;
+        savePrefs();
+      }
+    });
+    map.on("overlayremove", (e) => {
+      if (e.layer === shelterLayer) {
+        prefs.showShelters = false;
+        savePrefs();
+      }
+    });
   }
   function refreshMapStyles() {
     for (const [id, layer] of segLayers) {
@@ -4530,13 +4547,9 @@
   // -------- Pref changes --------
   function applyDirection() { prefs.direction = directionEl.value; savePrefs(); renderSections(); }
   function applyViewMode() { prefs.viewMode = viewModeEl.value; savePrefs(); renderSections(); }
-  function applyShelterToggle() {
-    prefs.showShelters = showSheltersEl.checked;
-    savePrefs();
-    if (!shelterLayer) return;
-    if (prefs.showShelters) shelterLayer.addTo(map);
-    else map.removeLayer(shelterLayer);
-  }
+  // Shelter toggle now lives in the Leaflet layer-control overlay panel
+  // (top-right ▤). Its show/hide handlers run via map.on("overlayadd"/
+  // "overlayremove") in drawSegmentsOnMap, so no separate apply fn here.
   function applyColorByYear() { prefs.colorByYear = colorByYearEl.checked; savePrefs(); refreshMapStyles(); }
 
   // -------- Boot --------
@@ -4678,7 +4691,8 @@
 
     directionEl.value = prefs.direction;
     viewModeEl.value = prefs.viewMode || "state";
-    showSheltersEl.checked = prefs.showShelters;
+    // Shelter visibility is reflected in the Leaflet layer-control panel
+    // checkbox state, derived from prefs.showShelters at draw time.
     colorByYearEl.checked = prefs.colorByYear;
     applyTheme();
 
@@ -4732,7 +4746,6 @@
     } catch (e) {}
     directionEl.addEventListener("change", applyDirection);
     viewModeEl.addEventListener("change", applyViewMode);
-    showSheltersEl.addEventListener("change", applyShelterToggle);
     colorByYearEl.addEventListener("change", applyColorByYear);
 
     profileSelectEl.addEventListener("change", () => switchProfile(profileSelectEl.value));
