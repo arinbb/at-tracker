@@ -1253,6 +1253,35 @@
   #planned-body .iti-row .iti-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   #planned-body .iti-row .iti-stats { font-variant-numeric: tabular-nums; font-size: 11px; color: var(--muted); white-space: nowrap; }
   #planned-body .iti-row.iti-pinned { background: rgba(232, 168, 73, 0.10); border-left: 3px solid #c89441; padding-left: 5px; }
+  /* Day-shift buttons (◀ / ▶): subtle until hovered. data-day-shift
+     drives them; they push or pull a single day's endpoint to the
+     adjacent shelter and re-balance downstream days. */
+  #planned-body .iti-row .iti-shift {
+    border: 1px solid var(--rule);
+    background: transparent;
+    cursor: pointer;
+    padding: 0 5px;
+    font-size: 10px;
+    line-height: 1.3;
+    color: var(--muted);
+    border-radius: 3px;
+    margin: 0 1px;
+    vertical-align: middle;
+    min-height: 0;
+  }
+  #planned-body .iti-row .iti-shift:hover:not(:disabled) {
+    background: var(--hover); color: var(--ink); border-color: var(--ink);
+  }
+  #planned-body .iti-row .iti-shift:disabled {
+    opacity: 0.25;
+    cursor: not-allowed;
+  }
+  /* Visual flag for a day endpoint the user explicitly forced via [◀]/[▶]. */
+  #planned-body .iti-row.iti-overridden {
+    background: rgba(26, 95, 180, 0.07);
+    border-left: 3px solid var(--plan);
+    padding-left: 5px;
+  }
   #planned-body .iti-row .iti-pin {
     border: none;
     background: transparent;
@@ -1574,6 +1603,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=47"></script>
+<script src="app.js?v=48"></script>
 </body>
 </html>

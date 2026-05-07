@@ -2541,12 +2541,23 @@
       html.push(grid(statsRows));
 
       // Pace + estimated trip days. Live-recomputes when user changes pace.
+      const _activeTrip = getActiveTrip();
+      const _shelterOnly = !!(_activeTrip && _activeTrip.shelterOnly);
       html.push(`<div class="pace-row">` +
         `<label>Pace: <input type="number" id="pace-input" min="1" max="40" step="0.5" value="${pace}" /> mi/day</label>` +
         `<label style="margin-left:6px;">Start: <input type="date" id="trip-start" value="${escapeHtml(startDate)}" /></label>` +
         `<label style="margin-left:6px;">Zero day every <input type="number" id="zero-freq" min="0" max="14" step="1" value="${zeroFreq}" style="width:48px;" /> days (0 = none)</label>` +
         `<span style="color:var(--muted);">→</span>` +
         `<span id="pace-out"><strong>${estDays}</strong> hike day${estDays === 1 ? "" : "s"}</span>` +
+        `</div>` +
+        // Shelter-only filter for day endpoints. When on, the algorithm
+        // never picks a road crossing or random landmark as a day end.
+        `<div class="pace-row" style="margin-top:4px;">` +
+        `<label title="When set, every day must end at a shelter / lean-to / hut / cabin. The pace, ◀, and ▶ controls still work; days that can't reach a shelter relax this rule rather than producing no day.">` +
+        `<input type="checkbox" id="shelter-only-toggle" ${_shelterOnly ? "checked" : ""} /> End days at shelters only` +
+        `</label>` +
+        // Reset day overrides — clears any [◀]/[▶] choices the user made
+        `<button type="button" id="reset-day-overrides" style="margin-left:auto;font-size:11px;padding:3px 8px;" title="Clear all day-endpoint overrides">Reset day overrides</button>` +
         `</div>`);
 
       // Difficulty bar (only when we have elevation)
@@ -2694,19 +2705,64 @@
       renderPlannedSummary();
     });
 
-    // Pin/unpin overnight stops in the calendar (delegated click)
+    // Pin/unpin overnight stops + day-endpoint shift buttons (delegated)
     $("planned-itinerary")?.addEventListener("click", (e) => {
-      const btn = e.target.closest("[data-pin-stop]");
-      if (!btn) return;
+      const pinBtn = e.target.closest("[data-pin-stop]");
+      const shiftBtn = e.target.closest("[data-day-shift]");
+      if (!pinBtn && !shiftBtn) return;
       e.preventDefault();
-      const stopName = btn.dataset.pinStop;
       const t = ensureActiveTrip();
-      if (!Array.isArray(t.pins)) t.pins = [];
-      const idx = t.pins.indexOf(stopName);
-      if (idx >= 0) t.pins.splice(idx, 1);
-      else t.pins.push(stopName);
+      if (pinBtn) {
+        const stopName = pinBtn.dataset.pinStop;
+        if (!Array.isArray(t.pins)) t.pins = [];
+        const idx = t.pins.indexOf(stopName);
+        if (idx >= 0) t.pins.splice(idx, 1);
+        else t.pins.push(stopName);
+      } else if (shiftBtn) {
+        // [◀] / [▶] — push or pull this day's endpoint to the adjacent
+        // shelter. We re-derive the day's current endpoint from a fresh
+        // itinerary build so click chains work correctly even after the
+        // structure has shifted.
+        const direction = shiftBtn.dataset.dayShift; // "back" | "forward"
+        const dayIdx = Number(shiftBtn.dataset.dayIdx);
+        if (!Array.isArray(t.dayOverrides)) t.dayOverrides = [];
+        const _pins = Array.isArray(t.pins) ? t.pins : [];
+        const _shelt = !!t.shelterOnly;
+        const it = buildItinerary(plannedSegs, pace, startDate, zeroFreq, _pins, t.dayOverrides, _shelt);
+        const day = it[dayIdx];
+        if (!day || day.kind !== "hike") return;
+        // Compute mile position of each shelter in trail order, then mile
+        // position where the current day ends, then find adjacent shelter.
+        const shelters = [];
+        let cum = 0;
+        for (const s of plannedSegs) {
+          cum += s.miles;
+          if (breakpointKind(s.to).kind === "shelter") {
+            shelters.push({ name: s.to, mi: cum });
+          }
+        }
+        // Day end mile = sum of miles up to and including this day.
+        let dayEndMi = 0;
+        for (let i = 0; i <= dayIdx; i++) {
+          if (it[i].kind === "hike") dayEndMi += it[i].miles;
+        }
+        let adj = null;
+        if (direction === "back") {
+          for (const sh of shelters) {
+            if (sh.mi < dayEndMi - 0.05) adj = sh; else break;
+          }
+        } else {
+          adj = shelters.find((sh) => sh.mi > dayEndMi + 0.05) || null;
+        }
+        if (!adj) return; // disabled at the boundary
+        // If the day's current endpoint is itself an override, swap it
+        // out for the new adjacent shelter (so chained clicks keep
+        // moving in the same direction). Otherwise just add the new one.
+        const curEndIdx = t.dayOverrides.indexOf(day.to);
+        if (curEndIdx >= 0) t.dayOverrides.splice(curEndIdx, 1);
+        if (!t.dayOverrides.includes(adj.name)) t.dayOverrides.push(adj.name);
+      }
       saveTrips();
-      // Re-render only the calendar div
       const itEl = $("planned-itinerary");
       if (itEl) itEl.innerHTML = renderItineraryHTML(plannedSegs, pace, startDate, zeroFreq);
     });
@@ -2730,6 +2786,24 @@
       const el = $(id);
       if (el) el.addEventListener("input", recomputeItinerary);
     });
+    // Shelter-only toggle: persists on the active trip (not in prefs) so
+    // each trip can have its own preference.
+    $("shelter-only-toggle")?.addEventListener("change", (e) => {
+      const t = ensureActiveTrip();
+      t.shelterOnly = !!e.target.checked;
+      saveTrips();
+      const ititem = $("planned-itinerary");
+      if (ititem) ititem.innerHTML = renderItineraryHTML(plannedSegs, prefs.pace || 12, prefs.tripStartDate || todayISO(), prefs.zeroDayFreq || 0);
+    });
+    // Reset day overrides: clears any [◀]/[▶] choices the user made.
+    $("reset-day-overrides")?.addEventListener("click", () => {
+      const t = getActiveTrip();
+      if (!t || !Array.isArray(t.dayOverrides) || t.dayOverrides.length === 0) return;
+      t.dayOverrides = [];
+      saveTrips();
+      const ititem = $("planned-itinerary");
+      if (ititem) ititem.innerHTML = renderItineraryHTML(plannedSegs, prefs.pace || 12, prefs.tripStartDate || todayISO(), prefs.zeroDayFreq || 0);
+    });
     // Initial render of the calendar
     const itEl = $("planned-itinerary");
     if (itEl) itEl.innerHTML = renderItineraryHTML(plannedSegs, pace, startDate, zeroFreq);
@@ -2737,9 +2811,14 @@
   // Build a day-by-day plan: walk planned segments in order, accumulating
   // miles up to `pace`. Prefer to stop at a shelter endpoint near the day's
   // target. Insert zero days at the configured frequency.
-  function buildItinerary(plannedSegs, paceMi, startISO, zeroFreq, pinNames) {
+  function buildItinerary(plannedSegs, paceMi, startISO, zeroFreq, pinNames, dayOverrides, shelterOnly) {
     const days = [];
     const pinSet = new Set(pinNames || []);
+    // dayOverrides: ordered list of stop names that MUST be a day endpoint.
+    // Unlike pins (capped at 2.5x pace ahead), overrides force the day to
+    // end exactly there — used by the [◀]/[▶] buttons to push or pull a
+    // single day's endpoint to the adjacent shelter.
+    const overrideSet = new Set(dayOverrides || []);
     let curMi = 0;
     let curGain = 0;
     let curLoss = 0;
@@ -2752,10 +2831,40 @@
     // pace=15 and 50.3 mi total, estDays = round(3.35) = 3, so each day
     // targets 16.77 mi rather than the literal 15. Without this, residual
     // miles accumulate and produce N+1 days when the user expected N.
+    //
+    // When the user has overrides, recompute the effective pace separately
+    // for each stretch between overrides (or from current to next override),
+    // so days within each stretch stay evenly distributed.
     const totalMi = plannedSegs.reduce((a, s) => a + s.miles, 0);
-    const estDays = totalMi > 0 ? Math.max(1, Math.round(totalMi / paceMi)) : 1;
-    const effectivePace = totalMi > 0 ? totalMi / estDays : paceMi;
+    // Precompute the mile position of each override in trail order.
+    const overridePositions = [];
+    {
+      let cum = 0;
+      for (let i = 0; i < plannedSegs.length; i++) {
+        cum += plannedSegs[i].miles;
+        if (overrideSet.has(plannedSegs[i].to)) {
+          overridePositions.push({ stopName: plannedSegs[i].to, mi: cum, segEndIdx: i });
+        }
+      }
+    }
+    function effectivePaceForRemaining(milesSoFar) {
+      // Find next override past milesSoFar; pace for the stretch up to it.
+      const nextOv = overridePositions.find((op) => op.mi > milesSoFar + 0.05);
+      const stretchMi = (nextOv ? nextOv.mi : totalMi) - milesSoFar;
+      if (stretchMi <= 0) return paceMi;
+      const stretchDays = Math.max(1, Math.round(stretchMi / paceMi));
+      return stretchMi / stretchDays;
+    }
     while (segIdx < plannedSegs.length) {
+      // Override check: take precedence over pins. An override has no
+      // distance cap — the user explicitly chose this stop as a day end,
+      // so walk to it however far that is.
+      let overrideSegIdx = -1;
+      {
+        for (let i = segIdx; i < plannedSegs.length; i++) {
+          if (overrideSet.has(plannedSegs[i].to)) { overrideSegIdx = i; break; }
+        }
+      }
       // Pin check: if a pinned overnight stop is within 2.5x pace ahead,
       // force the day to end exactly there (override the algorithmic logic).
       let pinSegIdx = -1;
@@ -2767,6 +2876,32 @@
           if (pinSet.has(s.to)) { pinSegIdx = i; break; }
           if (aheadMi > paceMi * 2.5) break;
         }
+      }
+      // Override beats pin when both apply — overrides are an explicit
+      // user choice, pins are auto-enforced once-only.
+      if (overrideSegIdx >= 0 && (pinSegIdx < 0 || overrideSegIdx <= pinSegIdx)) {
+        let dayMi = 0, dayGain = 0, dayLoss = 0;
+        for (let i = segIdx; i <= overrideSegIdx; i++) {
+          const s = plannedSegs[i];
+          const consumed = (i === segIdx) ? (s.miles - consumedMiInCurSeg) : s.miles;
+          dayMi += consumed;
+          dayGain += (s.elev_gain || 0) * (consumed / s.miles);
+          dayLoss += (s.elev_loss || 0) * (consumed / s.miles);
+        }
+        const lastSeg = plannedSegs[overrideSegIdx];
+        const k = breakpointKind(lastSeg.to);
+        const daySegs = plannedSegs.slice(dayStartSegIdx, overrideSegIdx + 1);
+        days.push({
+          from: dayStart, to: lastSeg.to, toIcon: k.icon, toKind: k.kind,
+          miles: dayMi, gain: dayGain, loss: dayLoss,
+          segs: daySegs, overridden: true,
+        });
+        dayStart = lastSeg.to;
+        dayStartSegIdx = overrideSegIdx + 1;
+        segIdx = overrideSegIdx + 1;
+        consumedMiInCurSeg = 0;
+        curMi += dayMi; curGain += dayGain; curLoss += dayLoss;
+        continue;
       }
       if (pinSegIdx >= 0) {
         let dayMi = 0, dayGain = 0, dayLoss = 0;
@@ -2798,7 +2933,10 @@
         curMi += dayMi; curGain += dayGain; curLoss += dayLoss;
         continue;
       }
-      const target = effectivePace;
+      // Per-stretch effective pace: distribute the remaining distance to
+      // the next override (or trip end) evenly across the days that fit
+      // into it. Without overrides this collapses to totalMi / estDays.
+      const target = effectivePaceForRemaining(curMi);
       // Walk forward until we hit target or run out of segments
       let dayMi = 0;
       let dayGain = 0;
@@ -2857,14 +2995,22 @@
       }
       // Pick the best candidate stop: prefer shelter endpoints close to target.
       let chosen = null;
-      if (candidateStops.length > 0) {
+      // Apply the shelter-only filter when set. If no shelter candidates
+      // exist (e.g., a stretch with no shelter in pace range), fall back
+      // to the full list rather than producing no day at all.
+      let candidatePool = candidateStops;
+      if (shelterOnly) {
+        const sheltersOnly = candidateStops.filter((c) => c.endKind === "shelter");
+        if (sheltersOnly.length > 0) candidatePool = sheltersOnly;
+      }
+      if (candidatePool.length > 0) {
         // Score = kind penalty + proximity penalty. Proximity weight at
         // 0.18/mi means a shelter 5 mi off target loses to a road
         // exactly at target (5×0.18 = 0.9 > 0.3) — the user's pace
         // intent wins over a small kind preference. A shelter 2 mi off
         // target still beats a road exactly at target (2×0.18 = 0.36 >
         // 0.3) so we don't ditch a nearby shelter for a tiny convenience.
-        const scored = candidateStops.map((c) => ({
+        const scored = candidatePool.map((c) => ({
           ...c,
           score: (c.endKind === "shelter" ? 0 : c.endKind === "road" ? 0.3 : 0.6) +
                  Math.abs(c.mi - target) * 0.18,
@@ -2952,10 +3098,34 @@
     if (plannedSegs.length === 0) return "";
     const t = getActiveTrip();
     const pins = t && Array.isArray(t.pins) ? t.pins : [];
-    const itinerary = buildItinerary(plannedSegs, pace, startISO, zeroFreq, pins);
+    const dayOverrides = t && Array.isArray(t.dayOverrides) ? t.dayOverrides : [];
+    const shelterOnly = !!(t && t.shelterOnly);
+    const itinerary = buildItinerary(plannedSegs, pace, startISO, zeroFreq, pins, dayOverrides, shelterOnly);
+    // Pre-compute the trail-mile position of each shelter-kind segment
+    // endpoint in the planned route. The [◀]/[▶] buttons consult this
+    // to know which adjacent shelter to push or pull a day to.
+    const shelterPositions = [];
+    {
+      let cum = 0;
+      for (const s of plannedSegs) {
+        cum += s.miles;
+        if (breakpointKind(s.to).kind === "shelter") {
+          shelterPositions.push({ name: s.to, mi: cum });
+        }
+      }
+    }
+    const findPrevShelter = (mi) => {
+      let prev = null;
+      for (const p of shelterPositions) {
+        if (p.mi < mi - 0.05) prev = p; else break;
+      }
+      return prev;
+    };
+    const findNextShelter = (mi) => shelterPositions.find((p) => p.mi > mi + 0.05) || null;
     const rows = [];
     let cumMi = 0, hikeNum = 0;
-    for (const d of itinerary) {
+    for (let dIdx = 0; dIdx < itinerary.length; dIdx++) {
+      const d = itinerary[dIdx];
       if (d.kind === "zero") {
         rows.push(
           `<div class="iti-row iti-zero"><span class="iti-day">${dayOfWeek(d.date)}</span>` +
@@ -2967,11 +3137,22 @@
         cumMi += d.miles;
         const dayFtPerMi = d.miles > 0 ? (d.gain + d.loss) / d.miles : 0;
         const isPinned = !!d.pinned;
+        const isOverridden = !!d.overridden;
         const pinTitle = isPinned ? "Pinned overnight stop — click to unpin" : "Pin this stop as a required overnight";
+        // [◀] enabled if there's a prev shelter before this day's end mile.
+        // [▶] enabled if there's a next shelter past it. Disabled buttons
+        // render but greyed so the row layout stays stable.
+        const dayEndMi = cumMi;
+        const prev = findPrevShelter(dayEndMi);
+        const next = findNextShelter(dayEndMi);
+        const shorterEnabled = !!prev;
+        const furtherEnabled = !!next;
         rows.push(
-          `<div class="iti-row${isPinned ? " iti-pinned" : ""}"><span class="iti-day">${dayOfWeek(d.date)}</span>` +
+          `<div class="iti-row${isPinned ? " iti-pinned" : ""}${isOverridden ? " iti-overridden" : ""}"><span class="iti-day">${dayOfWeek(d.date)}</span>` +
           `<span class="iti-date">${escapeHtml(d.date)}</span>` +
           `<span class="iti-text">Day ${hikeNum}: <strong>${escapeHtml(d.from)}</strong> → <strong>${d.toIcon} ${escapeHtml(d.to)}</strong> ` +
+            `<button class="iti-shift" data-day-shift="back" data-day-idx="${dIdx}" title="Pull this day's endpoint back to the previous shelter" aria-label="Shorter day"${shorterEnabled ? "" : " disabled"}>◀</button>` +
+            `<button class="iti-shift" data-day-shift="forward" data-day-idx="${dIdx}" title="Push this day's endpoint forward to the next shelter" aria-label="Longer day"${furtherEnabled ? "" : " disabled"}>▶</button>` +
             `<button class="iti-pin${isPinned ? " on" : ""}" data-pin-stop="${escapeHtml(d.to)}" title="${pinTitle}" aria-label="${pinTitle}" aria-pressed="${isPinned}">📌</button>` +
           `</span>` +
           `<span class="iti-stats">${d.miles.toFixed(1)} mi · ${cumMi.toFixed(1)} cum · +${Math.round(d.gain)}/−${Math.round(d.loss)} ft ${difficultyBadgeHTML(dayFtPerMi, { compact: true })}</span>` +
@@ -3056,7 +3237,11 @@
     const pace = Math.max(1, Math.min(50, Number(prefs.pace) || 12));
     const startDate = prefs.tripStartDate || todayISO();
     const zeroFreq = Math.max(0, Math.min(14, Number(prefs.zeroDayFreq) || 0));
-    const itinerary = buildItinerary(plannedSegs, pace, startDate, zeroFreq);
+    const _t = getActiveTrip();
+    const _pins = _t && Array.isArray(_t.pins) ? _t.pins : [];
+    const _ovr = _t && Array.isArray(_t.dayOverrides) ? _t.dayOverrides : [];
+    const _shelt = !!(_t && _t.shelterOnly);
+    const itinerary = buildItinerary(plannedSegs, pace, startDate, zeroFreq, _pins, _ovr, _shelt);
     $("share-plan-url").value = planShareURL();
     $("share-plan-text").value = planTextSummary(plannedSegs, itinerary);
     $("share-plan-modal").classList.add("show");
@@ -4135,7 +4320,10 @@
       const pace = Math.max(1, Math.min(50, Number(prefs.pace) || 12));
       const startDate = prefs.tripStartDate || todayISO();
       const zeroFreq = Math.max(0, Math.min(14, Number(prefs.zeroDayFreq) || 0));
-      const itinerary = buildItinerary(plannedOnly, pace, startDate, zeroFreq);
+      const _pins = t && Array.isArray(t.pins) ? t.pins : [];
+      const _ovr = t && Array.isArray(t.dayOverrides) ? t.dayOverrides : [];
+      const _shelt = !!(t && t.shelterOnly);
+      const itinerary = buildItinerary(plannedOnly, pace, startDate, zeroFreq, _pins, _ovr, _shelt);
       const hikeDays = itinerary.filter((d) => d.kind === "hike").length;
       lines.push(`    <Folder><name>Planned: ${plannedOnly.length} sections · ${hikeDays} day${hikeDays === 1 ? "" : "s"}${t ? " · " + kmlEscape(t.name) : ""}</name>`);
       lines.push(`      <description>${kmlEscape(t ? "Trip: " + t.name + " · " : "")}Pace ${pace} mi/day from ${startDate}</description>`);
