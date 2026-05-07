@@ -380,6 +380,186 @@
     }
   }
 
+  // -------- v4 -> v5 user data migration --------
+  // v5 splits many v4 segments at landmarks, so a single v4 segment maps
+  // to ONE OR MORE v5 children. The naive "v4-midpoint → nearest v5"
+  // pattern would mark only the child containing that midpoint, dropping
+  // the other children's hiked/planned status — a user with a fully-hiked
+  // state would see partial progress after migration.
+  //
+  // Instead, build the inverse remap: for each v5 segment, find which v4
+  // segment its midpoint sits inside (within ~0.3 km of any v4 vertex).
+  // That gives v4Id → [v5Id, v5Id, …]. Then transfer state from each
+  // hiked/planned/etc. v4 to ALL its v5 children.
+  async function migrateV4ToV5() {
+    let v4;
+    try {
+      const r = await fetch("at_data_v4.json", { cache: "no-cache" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      v4 = await r.json();
+    } catch (e) {
+      console.warn("can't load at_data_v4.json — skipping v4->v5 migration:", e);
+      return;
+    }
+    const v4Segs = v4.segments || [];
+    if (v4Segs.length === 0) return;
+
+    // Build v4 spatial index — for each v4 vertex, store the v4 seg id
+    // and the vertex coords. Cell size 0.005° (~500 m) so a v5 mid lookup
+    // searches just a handful of cells.
+    const CELL = 0.005;
+    const v4Grid = new Map();
+    for (const s of v4Segs) {
+      if (!s.geom || s.geom.length < 2) continue;
+      for (const [lon, lat] of s.geom) {
+        const key = `${Math.floor(lon / CELL)},${Math.floor(lat / CELL)}`;
+        let bucket = v4Grid.get(key);
+        if (!bucket) { bucket = []; v4Grid.set(key, bucket); }
+        bucket.push({ v4Id: s.id, lon, lat });
+      }
+    }
+    function nearestV4ForPoint(lon, lat) {
+      const cx = Math.floor(lon / CELL);
+      const cy = Math.floor(lat / CELL);
+      let best = null, bestKm = Infinity;
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const bucket = v4Grid.get(`${cx + dx},${cy + dy}`);
+          if (!bucket) continue;
+          for (const p of bucket) {
+            const lat0 = (p.lat + lat) * 0.5 * Math.PI / 180;
+            const ddx = (p.lon - lon) * 111.32 * Math.cos(lat0);
+            const ddy = (p.lat - lat) * 110.574;
+            const km = Math.sqrt(ddx * ddx + ddy * ddy);
+            if (km < bestKm) { bestKm = km; best = p; }
+          }
+        }
+      }
+      return best ? { v4Id: best.v4Id, km: bestKm } : null;
+    }
+
+    // v4Id → [v5Id, v5Id, …]
+    const reverseRemap = new Map();
+    for (const v5Seg of DATA.segments) {
+      const c = v5Seg.geom;
+      if (!c || c.length < 2) continue;
+      const m = c[Math.floor(c.length / 2)];
+      const match = nearestV4ForPoint(m[0], m[1]);
+      if (match && match.km < 0.5) {
+        let arr = reverseRemap.get(match.v4Id);
+        if (!arr) { arr = []; reverseRemap.set(match.v4Id, arr); }
+        arr.push(v5Seg.id);
+      }
+    }
+    if (reverseRemap.size === 0) return;
+    let totalChildren = 0;
+    for (const arr of reverseRemap.values()) totalChildren += arr.length;
+    console.warn(
+      `Migrating v4 → v5: ${reverseRemap.size} v4 segments → ${totalChildren} v5 children ` +
+      `(${(totalChildren / reverseRemap.size).toFixed(2)}× avg fan-out)`
+    );
+
+    // A v5 segment ID set so we can distinguish "key is a v4 ID we should
+    // remap" from "key is already a v5 ID, leave as-is". Without this
+    // check, a re-run of this migration on already-migrated localStorage
+    // would drop every entry on the floor.
+    const v5IdSet = new Set(DATA.segments.map((s) => s.id));
+
+    const profilesList = loadProfileList();
+    for (const profileName of profilesList) {
+      // progress: each hiked v4 → all its v5 children, keeping earliest
+      // date. Pre-existing v5 keys pass through untouched.
+      const prog = safeGet(progressKey(profileName));
+      if (prog) {
+        try {
+          const obj = JSON.parse(prog);
+          const newObj = {};
+          for (const [k, v] of Object.entries(obj)) {
+            const numK = Number(k);
+            const v5Ids = reverseRemap.get(numK);
+            if (v5Ids) {
+              for (const newId of v5Ids) {
+                if (!(newId in newObj) || (v && (!newObj[newId] || v < newObj[newId]))) {
+                  newObj[newId] = v;
+                }
+              }
+            } else if (v5IdSet.has(numK)) {
+              // Already a valid v5 ID (likely from a previous migration
+              // pass) — keep it. Earliest-date wins on collision.
+              if (!(numK in newObj) || (v && (!newObj[numK] || v < newObj[numK]))) {
+                newObj[numK] = v;
+              }
+            }
+          }
+          safeSet(progressKey(profileName), JSON.stringify(newObj));
+        } catch (e) {}
+      }
+      // planned: same logic — expand v4 ids, pass v5 ids through
+      const pl = safeGet(plannedKey(profileName));
+      if (pl) {
+        try {
+          const arr = JSON.parse(pl).map(Number);
+          const out = new Set();
+          for (const id of arr) {
+            const v5Ids = reverseRemap.get(id);
+            if (v5Ids) for (const newId of v5Ids) out.add(newId);
+            else if (v5IdSet.has(id)) out.add(id);
+          }
+          safeSet(plannedKey(profileName), JSON.stringify([...out]));
+        } catch (e) {}
+      }
+      // notes: ditto, but concatenate when multiple notes hit the same
+      // child (across v4 siblings or via re-migration).
+      const nt = safeGet(notesKey(profileName));
+      if (nt) {
+        try {
+          const obj = JSON.parse(nt);
+          const newObj = {};
+          const merge = (id, val) => {
+            newObj[id] = newObj[id] ? `${newObj[id]}\n---\n${val}` : val;
+          };
+          for (const [k, v] of Object.entries(obj)) {
+            const numK = Number(k);
+            const v5Ids = reverseRemap.get(numK);
+            if (v5Ids) for (const newId of v5Ids) merge(newId, v);
+            else if (v5IdSet.has(numK)) merge(numK, v);
+          }
+          safeSet(notesKey(profileName), JSON.stringify(newObj));
+        } catch (e) {}
+      }
+      // trips: each trip's segs list → expand each v4 ID, pass v5 IDs through
+      const tr = safeGet(tripsKey(profileName));
+      if (tr) {
+        try {
+          const obj = JSON.parse(tr);
+          if (Array.isArray(obj.trips)) {
+            for (const t of obj.trips) {
+              if (Array.isArray(t.segs)) {
+                const out = new Set();
+                for (const id of t.segs.map(Number)) {
+                  const v5Ids = reverseRemap.get(id);
+                  if (v5Ids) for (const newId of v5Ids) out.add(newId);
+                  else if (v5IdSet.has(id)) out.add(id);
+                }
+                t.segs = [...out];
+              }
+            }
+          }
+          safeSet(tripsKey(profileName), JSON.stringify(obj));
+        } catch (e) {}
+      }
+    }
+
+    // Note: the previous version of this code attempted a "sibling-fill"
+    // recovery pass for users who had run an earlier (broken) version of
+    // this migration. It turned out to over-report progress because the
+    // reverseRemap groups v5 segments by nearest v4 vertex, which can
+    // cross v4 segment boundaries near shared endpoints. Removed in
+    // favor of conservative behavior: fresh users get correct expansion,
+    // already-migrated users keep whatever they had (slightly under-
+    // reported when v4 segments were split).
+  }
+
   // -------- Profiles --------
   function loadProfileList() {
     const raw = safeGet(LS_PROFILES);
@@ -4171,6 +4351,15 @@
       }
     } catch (e) {
       console.warn("v4 migration failed:", e);
+    }
+    // v4 -> v5 migration (landmark-subdivided long segments).
+    try {
+      if ((data.version || 1) >= 5 && !safeGet("at-tracker-migrated-v5")) {
+        await migrateV4ToV5();
+        safeSet("at-tracker-migrated-v5", "1");
+      }
+    } catch (e) {
+      console.warn("v5 migration failed:", e);
     }
 
     // Load wikitrail features (resupply, maildrop, hostel, hotel, restaurant, etc.)

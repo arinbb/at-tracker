@@ -1128,6 +1128,154 @@ def _project_pois_to_master(pois, master_coords, cum_mi, threshold_m=500):
     return out
 
 
+def _subdivide_long_gaps(
+    breakpoints: list,
+    master_coords: list,
+    cum_mi: list,
+    long_threshold_mi: float = 8.0,
+    min_sub_mi: float = 3.0,
+):
+    """Insert landmark breakpoints inside long gaps between existing breakpoints.
+
+    For each pair of consecutive breakpoints whose mile gap exceeds
+    ``long_threshold_mi``, scan ``at_features.json`` for named peaks,
+    viewpoints, campsites, and towns whose nearest trail vertex sits
+    within 50 m. Score candidates so distinctive landmarks (named
+    summits, real viewpoints) outrank generic ones ("Vista 1",
+    "Pile of Rocks"), then greedy-accept in mile order while respecting
+    a minimum spacing of ``min_sub_mi`` between any two breakpoints
+    (existing or newly inserted).
+
+    Returns the list of new breakpoint dicts to append. Order isn't
+    important — caller will re-sort.
+    """
+    features_path = OUT_PATH.parent / "at_features.json"
+    if not features_path.exists():
+        return []
+    try:
+        feat_doc = json.loads(features_path.read_text())
+    except Exception:
+        return []
+    raw_features = feat_doc.get("features", [])
+    if not raw_features:
+        return []
+
+    KEEP_KINDS = {"peak", "view", "campsite", "town"}
+    candidates_by_kind = [f for f in raw_features if f.get("kind") in KEEP_KINDS]
+
+    # Project each candidate onto the master polyline. Build a coarse cell
+    # index of master vertices so the lookup is O(candidates × small_cell)
+    # rather than O(candidates × master_coords).
+    grid = _build_spatial_index(master_coords, cell_deg=0.005)
+    max_off_km = 0.05  # 50 m
+
+    # Generic patterns we don't want as breakpoints — they make the segment
+    # name useless (e.g. "Vista 1 → Vista 2" tells the user nothing).
+    generic_view_patterns = (
+        "vista 1", "vista 2", "vista 3", "vista 4",
+        "overlook 1", "overlook 2", "overlook 3",
+        "pile of rocks", "open area", "scenic overlook",
+        "summit vista", "pipeline vista",  # not distinctive
+    )
+    summit_words = ("mt ", "mount ", "bald", "knob", "dome", "ridge", "peak")
+
+    def score(name: str, kind: str) -> int:
+        """Higher = better breakpoint candidate."""
+        n = (name or "").lower().strip()
+        if not n:
+            return 0
+        if kind == "peak":
+            if any(w in n for w in summit_words):
+                return 100
+            return 75
+        if kind == "town":
+            return 95
+        if kind == "view":
+            if any(p in n for p in generic_view_patterns):
+                return 25
+            return 60
+        if kind == "campsite":
+            return 65
+        return 40
+
+    projected = []
+    for f in candidates_by_kind:
+        name = f.get("name") or ""
+        if not name.strip():
+            continue
+        s = score(name, f.get("kind"))
+        if s < 50:  # below this, not worth using
+            continue
+        lon = f.get("lon")
+        lat = f.get("lat")
+        if lon is None or lat is None:
+            continue
+        idx, d_km = _nearest_in_grid((lon, lat), master_coords, grid, cell_deg=0.005, search_radius=2)
+        if idx < 0 or d_km > max_off_km:
+            continue
+        projected.append({
+            "name": name,
+            "kind": f.get("kind"),
+            "lat": lat,
+            "lon": lon,
+            "mi": cum_mi[idx],
+            "score": s,
+        })
+
+    if not projected:
+        return []
+
+    # For each gap, accept candidates greedily in mile order while keeping
+    # a minimum spacing. Within a single gap, prefer higher-scoring
+    # candidates over lower-scoring ones at similar miles.
+    accepted: list = []
+    sorted_bps = sorted(breakpoints, key=lambda b: b["mi"])
+
+    for i in range(len(sorted_bps) - 1):
+        a = sorted_bps[i]
+        b = sorted_bps[i + 1]
+        gap = b["mi"] - a["mi"]
+        if gap <= long_threshold_mi:
+            continue
+        # Target inner range avoiding the immediate vicinity of the existing
+        # endpoints (so we don't insert a breakpoint 0.5 mi from a shelter).
+        lo = a["mi"] + min_sub_mi
+        hi = b["mi"] - min_sub_mi
+        if hi <= lo:
+            continue
+        in_gap = [c for c in projected if lo <= c["mi"] <= hi]
+        if not in_gap:
+            continue
+        # Sort by mile so we walk south-to-north. Tie-break by score so a
+        # higher-scoring candidate at the same mile wins.
+        in_gap.sort(key=lambda c: (round(c["mi"], 1), -c["score"]))
+        # Greedy with a small lookahead: when picking a candidate at mile m,
+        # if there's a higher-scoring candidate within ±0.5 mi, prefer it.
+        last_accept_mi = a["mi"]
+        i_cand = 0
+        while i_cand < len(in_gap):
+            c = in_gap[i_cand]
+            # Window candidates with similar mile, choose the best-scoring
+            window = [c]
+            j = i_cand + 1
+            while j < len(in_gap) and abs(in_gap[j]["mi"] - c["mi"]) <= 0.5:
+                window.append(in_gap[j])
+                j += 1
+            best = max(window, key=lambda x: x["score"])
+            if best["mi"] - last_accept_mi >= min_sub_mi:
+                accepted.append({
+                    "name": best["name"],
+                    "mi": best["mi"],
+                    "kind": "landmark",  # distinct kind so segment "from"/"to" can pick it up
+                    "lat": best["lat"],
+                    "lon": best["lon"],
+                })
+                last_accept_mi = best["mi"]
+            i_cand = j  # skip past the whole window
+
+    return accepted
+
+
 def _assign_states_from_v2(segments):
     """Stamp each v4 segment with the state of its nearest v2 segment midpoint.
 
@@ -1232,6 +1380,27 @@ def main_kmz():
     breakpoints = collapsed
     print(f"  total breakpoints (post-dedup): {len(breakpoints)}")
 
+    # Step 4b: subdivide oversized gaps using named landmarks. The KMZ's
+    # shelter+road breakpoints leave a long tail of multi-day segments
+    # (e.g. 30 mi MA Riga, 26 mi Whites Webster→Pinkham, 24 mi PA stretches).
+    # Inside those gaps are well-known peaks, named viewpoints, and
+    # campsites that make natural sub-segment boundaries. Project them
+    # against the master polyline and greedy-accept ones that respect a
+    # minimum spacing.
+    extra_bps = _subdivide_long_gaps(
+        breakpoints, blended_master, cum_mi,
+        long_threshold_mi=8.0, min_sub_mi=3.0,
+    )
+    if extra_bps:
+        breakpoints.extend(extra_bps)
+        breakpoints.sort(key=lambda b: b["mi"])
+        print(f"  subdivision: added {len(extra_bps)} landmark breakpoints")
+        # Show a few for sanity-checking
+        for bp in extra_bps[:5]:
+            print(f"    + mi {bp['mi']:6.2f}  [{bp['kind']}]  {bp['name']}")
+        if len(extra_bps) > 5:
+            print(f"    ... and {len(extra_bps) - 5} more")
+
     print("=== STEP 5: Build segments + elevation ===")
     elev_cache = load_elev_cache()
     out_segments = []
@@ -1281,9 +1450,9 @@ def main_kmz():
     out_shelters = [{"name": s["name"], "lat": s["lat"], "lon": s["lon"]} for s in shelters]
     out_crossings = [{"label": c["name"], "lat": c["lat"], "lon": c["lon"]} for c in roads]
     bundle = {
-        "version": 4,
+        "version": 5,
         "generated": time.strftime("%Y-%m-%d"),
-        "source": "AT KMZ (community-curated) + NPS APPA Treadway snap-fill",
+        "source": "AT KMZ (community-curated) + NPS APPA Treadway snap-fill + landmark subdivision",
         "states": out_states,
         "segments": out_segments,
         "shelters": out_shelters,
