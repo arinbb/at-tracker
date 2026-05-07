@@ -2747,6 +2747,14 @@
     let segIdx = 0;
     let dayStartSegIdx = 0; // first plannedSegs index belonging to this day
     let consumedMiInCurSeg = 0; // miles used out of the current segment
+    // Effective pace: distribute total miles across the rounded day count
+    // so the day-by-day matches the header's "N hike days" estimate. With
+    // pace=15 and 50.3 mi total, estDays = round(3.35) = 3, so each day
+    // targets 16.77 mi rather than the literal 15. Without this, residual
+    // miles accumulate and produce N+1 days when the user expected N.
+    const totalMi = plannedSegs.reduce((a, s) => a + s.miles, 0);
+    const estDays = totalMi > 0 ? Math.max(1, Math.round(totalMi / paceMi)) : 1;
+    const effectivePace = totalMi > 0 ? totalMi / estDays : paceMi;
     while (segIdx < plannedSegs.length) {
       // Pin check: if a pinned overnight stop is within 2.5x pace ahead,
       // force the day to end exactly there (override the algorithmic logic).
@@ -2790,7 +2798,7 @@
         curMi += dayMi; curGain += dayGain; curLoss += dayLoss;
         continue;
       }
-      const target = paceMi;
+      const target = effectivePace;
       // Walk forward until we hit target or run out of segments
       let dayMi = 0;
       let dayGain = 0;
@@ -2816,21 +2824,31 @@
             segIdxAfter: segIdx,
           });
         } else {
-          // We could finish this segment OR stop short. We prefer to finish at
-          // a segment endpoint when it's reasonably close to target.
+          // We could finish this segment OR stop short. Always offer the
+          // segment-end as a candidate; let the scoring decide whether
+          // modest overshoot beats stopping short at an earlier endpoint.
+          // (Used to cap overshoot at 1.5 mi, which made high-pace plans
+          // collapse into too many days when the next shelter sat just
+          // past the target.)
           const finishMi = dayMi + remaining;
-          const overshoot = finishMi - target;
-          // If overshooting <= 1.5 mi we'll just go to the segment end.
-          if (overshoot <= 1.5) {
+          const finishGain = dayGain + (s.elev_gain || 0) * (remaining / s.miles);
+          const finishLoss = dayLoss + (s.elev_loss || 0) * (remaining / s.miles);
+          const k = breakpointKind(s.to);
+          candidateStops.push({
+            mi: finishMi, gain: finishGain, loss: finishLoss,
+            end: s.to, endKind: k.kind, endIcon: k.icon,
+            segIdxAfter: segIdx + 1,
+          });
+          // Only commit the segment forward if the overshoot is modest
+          // (so we don't burn through long segments on the way to a
+          // far-off endpoint when a closer-to-target stop wins anyway).
+          // The threshold scales with pace so a 27-mi day allows a few
+          // miles overshoot, while a 10-mi day stays tighter.
+          const maxOvershoot = Math.max(2.5, target * 0.25);
+          if (finishMi - target <= maxOvershoot) {
             dayMi = finishMi;
-            dayGain += (s.elev_gain || 0) * (remaining / s.miles);
-            dayLoss += (s.elev_loss || 0) * (remaining / s.miles);
-            const k = breakpointKind(s.to);
-            candidateStops.push({
-              mi: dayMi, gain: dayGain, loss: dayLoss,
-              end: s.to, endKind: k.kind, endIcon: k.icon,
-              segIdxAfter: segIdx + 1,
-            });
+            dayGain = finishGain;
+            dayLoss = finishLoss;
             consumedMiInCurSeg = 0;
             segIdx++;
           }
@@ -2840,11 +2858,16 @@
       // Pick the best candidate stop: prefer shelter endpoints close to target.
       let chosen = null;
       if (candidateStops.length > 0) {
-        // Score: shelters preferred, then proximity to target.
+        // Score = kind penalty + proximity penalty. Proximity weight at
+        // 0.18/mi means a shelter 5 mi off target loses to a road
+        // exactly at target (5×0.18 = 0.9 > 0.3) — the user's pace
+        // intent wins over a small kind preference. A shelter 2 mi off
+        // target still beats a road exactly at target (2×0.18 = 0.36 >
+        // 0.3) so we don't ditch a nearby shelter for a tiny convenience.
         const scored = candidateStops.map((c) => ({
           ...c,
           score: (c.endKind === "shelter" ? 0 : c.endKind === "road" ? 0.3 : 0.6) +
-                 Math.abs(c.mi - target) * 0.05,
+                 Math.abs(c.mi - target) * 0.18,
         }));
         scored.sort((a, b) => a.score - b.score);
         chosen = scored[0];
@@ -2880,6 +2903,17 @@
         loss: chosen.loss,
         segs: daySegs,
       });
+      // Sync the outer-loop segment cursor to wherever chosen actually
+      // landed. Pre-fix this was implicit because the inner loop always
+      // advanced segIdx in lockstep, but now we may have offered a
+      // segment-end candidate without consuming it (large overshoot).
+      // The candidate's segIdxAfter is the index *past* the day's last
+      // consumed segment, so segIdx should snap there.
+      segIdx = chosen.segIdxAfter;
+      // chosen's endpoint is a segment boundary unless it's the rare
+      // mid-segment split (handled above); reset the partial-consumption
+      // counter so the next day starts cleanly.
+      if (chosen.endKind !== "split") consumedMiInCurSeg = 0;
       dayStartSegIdx = chosen.segIdxAfter;
       dayStart = chosen.end;
       curMi += chosen.mi;
