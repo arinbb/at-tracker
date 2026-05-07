@@ -946,11 +946,15 @@
 
     shelterLayer = L.layerGroup();
     DATA.shelters.forEach((s) => {
+      // 2.5 px was visually swallowed by the dense trail polyline at any
+      // useful zoom. Bump to 4.5 with a thicker dark border so shelters
+      // pop against both the trail and the OSM tiles. Tooltip drops the
+      // state line because v5 shelter records don't carry that field.
       L.circleMarker([s.lat, s.lon], {
-        radius: 2.5, color: "#3a2d20", fillColor: "#e8a849",
-        fillOpacity: 0.95, weight: 0.8,
+        radius: 4.5, color: "#2a1d10", fillColor: "#e8a849",
+        fillOpacity: 0.95, weight: 1.2,
       })
-        .bindTooltip(`<strong>${escapeHtml(s.name)}</strong><br><small>${escapeHtml(s.state)}</small>`)
+        .bindTooltip(`<strong>${escapeHtml(s.name)}</strong>`)
         .addTo(shelterLayer);
     });
     if (prefs.showShelters) shelterLayer.addTo(map);
