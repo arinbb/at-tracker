@@ -995,14 +995,14 @@
   <div id="map"></div>
 </main>
 
-<div class="modal-bg" id="share-modal">
+<div class="modal-bg" id="share-modal" style="z-index: 1050;">
   <div class="modal" style="max-width: 580px;">
     <h2>Share / save your progress</h2>
-    <p style="margin-top: 4px;"><strong>Full backup file</strong> — includes hiked sections, planned segments, dates, and notes. Recommended for archival.</p>
+    <p style="margin-top: 4px;"><strong>Full backup file</strong> — includes hiked sections, planned segments, dates, notes, and pack. Recommended for archival.</p>
     <div class="modal-actions" style="justify-content: flex-start; margin: 8px 0 16px;">
       <button id="save-file" class="primary">Download backup file</button>
     </div>
-    <p style="margin-top: 4px;"><strong>Share URL</strong> — quick to send. Includes hiked + planned only; not notes.</p>
+    <p style="margin-top: 4px;"><strong>Share URL</strong> — quick to send. Includes hiked, planned, and pack; not notes.</p>
     <input type="text" id="share-url" readonly />
     <details style="margin-top: 8px;">
       <summary style="font-size: 12px; cursor: pointer; color: var(--muted);">Show short code</summary>
@@ -1015,10 +1015,10 @@
   </div>
 </div>
 
-<div class="modal-bg" id="load-modal">
+<div class="modal-bg" id="load-modal" style="z-index: 1050;">
   <div class="modal" style="max-width: 580px;">
     <h2>Restore progress</h2>
-    <p style="margin-top: 4px;"><strong>From a backup file</strong> — restores everything (hiked, planned, notes, profile name).</p>
+    <p style="margin-top: 4px;"><strong>From a backup file</strong> — restores everything (hiked, planned, notes, pack, profile name).</p>
     <input type="file" id="load-file" accept=".json,application/json" />
     <div id="load-file-status" style="font-size: 12px; color: var(--muted); margin-top: 4px;"></div>
 
@@ -1031,7 +1031,7 @@
   </div>
 </div>
 
-<div class="modal-bg" id="gpx-import-modal">
+<div class="modal-bg" id="gpx-import-modal" style="z-index: 1050;">
   <div class="modal">
     <h2>Import GPX track</h2>
     <p>Upload a .gpx file from a recorded hike. Segments where ≥60% of the trail polyline is within 100 meters of your track will be marked as hiked.</p>
@@ -1776,6 +1776,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=55"></script>
+<script src="app.js?v=59"></script>
 </body>
 </html>

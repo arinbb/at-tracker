@@ -2142,10 +2142,14 @@
         id: typeof x.id === "string" ? x.id : newPackItemId(),
         name: String(x.name || "").slice(0, 200),
         weight_oz: Math.max(0, Math.min(10000, Number(x.weight_oz) || 0)),
+        quantity: Math.max(1, Math.min(999, Math.round(Number(x.quantity)) || 1)),
         category: PACK_CATEGORIES.find((c) => c.id === x.category) ? x.category : "misc",
         condition: PACK_CONDITIONS.find((c) => c.id === x.condition) ? x.condition : "good",
         worn: !!x.worn,
         consumable: !!x.consumable,
+        // Default to in-pack when the field is absent (older share codes),
+        // matching packItemPacked()'s default-true behavior.
+        packed: x.packed === undefined ? true : !!x.packed,
         notes: String(x.notes || "").slice(0, 1000),
       }));
     return { items };
@@ -3981,9 +3985,11 @@
   function openShare() {
     const code = encodeProgress(progress);
     const planCode = encodePlanned(planned);
+    const packCode = encodePack(pack);
     const params = new URLSearchParams();
     if (code) params.set("c", code);
     if (planCode) params.set("pl", planCode);
+    if (packCode) params.set("pk", packCode);
     if (activeProfile !== DEFAULT_PROFILE) params.set("p", activeProfile);
     const hashStr = params.toString();
     const url = `${location.origin}${location.pathname}${hashStr ? "#" + hashStr : ""}`;
@@ -4003,18 +4009,33 @@
   function doLoad() {
     const raw = $("load-code").value.trim();
     if (!raw) { $("load-modal").classList.remove("show"); return; }
+    // `raw` is either a bare progress code or a full share URL. Pull the
+    // c= param out of a URL; if it's a URL with no c= (e.g. only planned or
+    // pack was shared), use an empty code rather than feeding the whole URL
+    // to atob() — that throws and aborts the entire restore before pack.
+    const looksLikeUrlOrParams = /[#?&]|(?:^|[#&?])(?:c|pl|pk|p)=/.test(raw);
     let code = raw;
     let profileName = null;
     const m = raw.match(/[#&?]c=([A-Za-z0-9_-]+)/);
     if (m) code = m[1];
+    else if (looksLikeUrlOrParams) code = "";
     const pm = raw.match(/[#&?]p=([^&]+)/);
     if (pm) { try { profileName = decodeURIComponent(pm[1]); } catch (e) {} }
     let plCode = "";
     const plm = raw.match(/[#&?]pl=([A-Za-z0-9_-]+)/);
     if (plm) plCode = plm[1];
+    // Pack code (pk=…). Optional — older share codes won't include this,
+    // and that's fine: in that case we just leave the existing pack alone.
+    // URL-encoded `+` arrives as `%2B`; URL-decode before handing to LZString.
+    let pkCode = "";
+    const pkm = raw.match(/[#&?]pk=([^&]+)/);
+    if (pkm) {
+      try { pkCode = decodeURIComponent(pkm[1]); } catch (e) { pkCode = pkm[1]; }
+    }
     try {
       const nextProg = decodeProgress(code);
       const nextPlanned = decodePlanned(plCode);
+      const nextPack = pkCode ? decodePack(pkCode) : null;
       if (profileName && profileName !== activeProfile) {
         ensureProfile(profileName);
         activeProfile = profileName;
@@ -4024,6 +4045,11 @@
       progress = nextProg;
       planned = nextPlanned;
       saveProgress();
+      if (nextPack) {
+        pack = nextPack;
+        savePack();
+        renderPack();
+      }
       renderSections();
       updateStats();
       refreshMapStyles();
@@ -4264,13 +4290,14 @@
   function buildBackup() {
     return {
       app: "at-section-tracker",
-      version: 2,
+      version: 3,
       exported: new Date().toISOString(),
       profile: activeProfile,
       hiked: Object.fromEntries(progress),
       planned: [...planned],
       trips: { trips, activeTripId },
       notes: Object.fromEntries([...notes].filter(([, v]) => v)),
+      pack: pack && pack.items ? { items: pack.items } : null,
     };
   }
   function saveBackupFile() {
@@ -4317,13 +4344,31 @@
       syncActiveTripFromPlanned();
       saveTrips();
     }
+    // Pack data (added in backup version 3). Older backups won't carry
+    // a pack field — preserve the existing pack rather than wiping it.
+    let packRestored = 0;
+    if (obj.pack && Array.isArray(obj.pack.items)) {
+      const sanitized = _sanitizePack(obj.pack);
+      if (sanitized) {
+        pack = sanitized;
+        packRestored = pack.items.length;
+        savePack();
+        renderPack();
+      }
+    }
     saveProgress();
     saveNotes();
     renderProfileSelect();
     renderSections();
     updateStats();
     refreshMapStyles();
-    const counts = `${progress.size} hiked · ${planned.size} planned · ${notes.size} notes`;
+    const parts = [
+      `${progress.size} hiked`,
+      `${planned.size} planned`,
+      `${notes.size} notes`,
+    ];
+    if (packRestored > 0) parts.push(`${packRestored} pack items`);
+    const counts = parts.join(" · ");
     status.textContent = `Restored profile "${profileName}" (${counts}).`;
     setTimeout(() => $("load-modal").classList.remove("show"), 1500);
   }
