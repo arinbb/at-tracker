@@ -720,6 +720,90 @@
     body.print-plan .iti-row, body.print-plan .seg-line { page-break-inside: avoid; }
   }
 
+  /* ===== Primary tab bar — the top-level mode switcher =====
+     One bar, one obvious place to switch between the major sections of
+     the app (Tracker / Hike Planner / Pack / Stats / Settings). Active
+     tab gets an accent underline so the user always knows where they are. */
+  .primary-tabs {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    padding: 0 8px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--rule);
+    overflow-x: auto;
+    flex-shrink: 0;
+  }
+  .primary-tabs button {
+    flex: 0 0 auto;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 10px 14px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    white-space: nowrap;
+    min-height: 0;
+    transition: color .12s, border-color .12s, background .12s;
+  }
+  .primary-tabs button:hover { color: var(--ink); background: var(--hover); }
+  .primary-tabs button.active {
+    color: var(--ink);
+    border-bottom-color: var(--accent);
+    font-weight: 600;
+  }
+  /* Search icon sits at the far right and doesn't get an active-tab
+     underline; it's a tool, not a mode. */
+  .primary-tabs .tab-search {
+    margin-left: auto;
+    font-size: 15px;
+    padding: 10px 12px;
+  }
+  .primary-tabs .tab-search.active { border-bottom-color: transparent; font-weight: 500; }
+  /* On narrow viewports, drop labels so all five tabs + search still fit. */
+  @media (max-width: 620px) {
+    .primary-tabs button { padding: 10px 10px; font-size: 16px; }
+    .primary-tabs button .tab-label { display: none; }
+  }
+
+  /* ===== Settings modal — single scrollable panel grouped by section. */
+  .settings-body { font-size: 13px; }
+  .settings-section { margin: 14px 0; padding: 12px; background: var(--panel-alt); border: 1px solid var(--rule); border-radius: 6px; }
+  .settings-section h3 {
+    margin: 0 0 6px 0; font-size: 11px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;
+  }
+  .settings-section .settings-help { font-size: 12px; color: var(--muted); margin: 0 0 10px 0; }
+  .settings-section .settings-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; padding: 6px 0;
+  }
+  .settings-section .settings-row + .settings-row { border-top: 1px dashed var(--rule); }
+  .settings-section .settings-row > span { color: var(--muted); }
+  .settings-section .settings-row select,
+  .settings-section .settings-row button {
+    font: inherit; font-size: 13px; padding: 5px 10px;
+    border: 1px solid var(--rule); border-radius: 4px;
+    background: var(--input-bg); color: var(--ink); cursor: pointer;
+  }
+  .settings-section .settings-row.settings-check { justify-content: flex-start; cursor: pointer; }
+  .settings-section .settings-row.settings-check input { margin: 0 6px 0 0; }
+  .settings-section .settings-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+  .settings-section .settings-buttons button {
+    font: inherit; font-size: 13px; padding: 5px 12px;
+    border: 1px solid var(--rule); border-radius: 4px;
+    background: var(--input-bg); color: var(--ink); cursor: pointer;
+  }
+  .settings-section .settings-danger {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  .settings-section .settings-danger:hover { background: rgba(217, 122, 100, 0.12); }
+
   /* ===== Phase 1 mobile ===== */
 
   /* Tab bar for narrow viewports — switches between sidebar list and map.
@@ -779,9 +863,6 @@
     body.mobile .identity-trigger .ident-name,
     body.mobile .identity-trigger .ident-caret { display: none; }
     body.mobile .identity-trigger { padding: 4px; border-radius: 50%; }
-    body.mobile #search-btn,
-    body.mobile #planned-btn,
-    body.mobile #stats-btn { display: none; }
   }
   /* Touch-only entries inside the More overflow menu, surfacing the
      actions hidden from the top toolbar at small widths. */
@@ -875,36 +956,19 @@
       <div class="sync-line"><span id="sync-status"></span></div>
     </div>
   </div>
-  <div class="actions">
-    <button id="search-btn" title="Search trail features (press /)" aria-label="Search">🔎</button>
-    <button id="planned-btn">Planned</button>
-    <button id="stats-btn">Stats</button>
-    <div class="overflow-menu" id="actions-more">
-      <button class="overflow-trigger" data-menu-trigger title="More actions" aria-haspopup="true" aria-expanded="false">⋯ More</button>
-      <div class="overflow-list" role="menu">
-        <!-- Mobile-only: surfaces the actions removed from the narrow toolbar -->
-        <button id="search-btn-mobile" class="mobile-only-btn" title="Search trail features">🔎 Search</button>
-        <button id="planned-btn-mobile" class="mobile-only-btn">🗓 Planned</button>
-        <button id="stats-btn-mobile" class="mobile-only-btn">📊 Stats</button>
-        <div class="menu-divider mobile-only-divider"></div>
-        <button id="pack-btn" title="Plan your pack: items, weight tally, and condition notes">🎒 Pack</button>
-        <div class="menu-divider"></div>
-        <div class="menu-label">Backup</div>
-        <button id="share-btn">Share / Save</button>
-        <button id="load-btn">Load Code</button>
-        <div class="menu-divider"></div>
-        <div class="menu-label">Export / Import</div>
-        <button id="gpx-export-btn">Export GPX</button>
-        <button id="gpx-import-btn">Import GPX</button>
-        <button id="kml-export-btn" title="Export to KML for Google Earth">Export KML</button>
-        <button id="print-btn">Print Journal</button>
-        <div class="menu-divider"></div>
-        <button id="theme-btn" title="Toggle light/dark theme">☾ Toggle theme</button>
-        <button id="reset-btn">Reset</button>
-      </div>
-    </div>
-  </div>
 </header>
+<!-- Primary tab bar. Sits below the header so it spans the full width
+     and clearly distinguishes app modes. Each tab opens its respective
+     modal (or, in Tracker's case, just returns to the default view);
+     the visual active state tells the user where they are. -->
+<nav class="primary-tabs" id="primary-tabs" role="tablist">
+  <button type="button" data-tab="tracker" class="active" role="tab" aria-selected="true"><span class="tab-icon">🗺</span><span class="tab-label"> Tracker</span></button>
+  <button type="button" data-tab="planner" id="planned-btn" role="tab" aria-selected="false"><span class="tab-icon">🗓</span><span class="tab-label"> Hike Planner</span></button>
+  <button type="button" data-tab="pack" id="pack-btn" role="tab" aria-selected="false"><span class="tab-icon">🎒</span><span class="tab-label"> Pack</span></button>
+  <button type="button" data-tab="stats" id="stats-btn" role="tab" aria-selected="false"><span class="tab-icon">📊</span><span class="tab-label"> Stats</span></button>
+  <button type="button" data-tab="settings" id="settings-tab" role="tab" aria-selected="false"><span class="tab-icon">⚙</span><span class="tab-label"> Settings</span></button>
+  <button type="button" id="search-btn" class="tab-search" title="Search trail features (press /)" aria-label="Search">🔎</button>
+</nav>
 
 <main>
   <!-- Mobile-only tab bar. Hidden on desktop via display:none, shown
@@ -922,27 +986,6 @@
         <label><input type="checkbox" id="filter-planned" /> planned only</label>
         <button id="multi-select-btn" type="button" title="Tap two segments to mark a range" aria-pressed="false" style="font-size: 12px; padding: 4px 8px;">Multi-select</button>
         <button id="add-trip-btn" type="button" title="Pick a start segment, then an end segment, then a date" aria-pressed="false" style="font-size: 12px; padding: 4px 8px;">+ Trip</button>
-        <!-- View settings — set-once knobs that used to live in their own
-             filter row. Tucked behind a cog so the filter bar isn't a
-             cockpit on first open. -->
-        <div class="overflow-menu" id="view-settings">
-          <button class="overflow-trigger" data-menu-trigger title="View settings" aria-haspopup="true" aria-expanded="false" style="font-size: 12px; padding: 4px 8px;">⚙ View</button>
-          <div class="overflow-list" role="menu" style="min-width: 220px; padding: 10px 12px;">
-            <label class="settings-row">View:
-              <select id="view-mode">
-                <option value="state">By state</option>
-                <option value="trip">By trip (date)</option>
-              </select>
-            </label>
-            <label class="settings-row">Direction:
-              <select id="direction">
-                <option value="nobo">SOBO → NOBO</option>
-                <option value="sobo">NOBO → SOBO</option>
-              </select>
-            </label>
-            <label class="settings-row settings-check"><input type="checkbox" id="color-by-year" /> Color trail by year hiked</label>
-          </div>
-        </div>
       </div>
       <div id="add-trip-banner" style="display:none;font-size:12px;padding:8px 10px;border-radius:6px;background:var(--plan-bg);color:var(--plan);line-height:1.4;"></div>
     </div>
@@ -1323,6 +1366,73 @@
   </div>
 </div>
 
+<!-- Settings: consolidated home for app-level knobs that used to live
+     scattered across the ⚙ View popover, the ⋯ More overflow, and the
+     header. Single scrollable modal grouped by purpose. -->
+<div class="modal-bg" id="settings-modal">
+  <div class="modal" style="max-width: 640px;">
+    <h2>Settings</h2>
+    <div class="settings-body">
+      <section class="settings-section">
+        <h3>Display</h3>
+        <label class="settings-row">
+          <span>Theme</span>
+          <button id="theme-btn" type="button" title="Toggle light/dark theme">☾ Toggle theme</button>
+        </label>
+        <label class="settings-row">
+          <span>View</span>
+          <select id="view-mode">
+            <option value="state">By state</option>
+            <option value="trip">By trip (date)</option>
+          </select>
+        </label>
+        <label class="settings-row">
+          <span>Direction</span>
+          <select id="direction">
+            <option value="nobo">SOBO → NOBO</option>
+            <option value="sobo">NOBO → SOBO</option>
+          </select>
+        </label>
+        <label class="settings-row settings-check">
+          <input type="checkbox" id="color-by-year" />
+          <span>Color trail by year hiked</span>
+        </label>
+      </section>
+
+      <section class="settings-section">
+        <h3>Backup</h3>
+        <p class="settings-help">Save or restore your hiked / planned / notes data.</p>
+        <div class="settings-buttons">
+          <button id="share-btn" type="button">Share / Save</button>
+          <button id="load-btn" type="button">Load Code</button>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h3>Export &amp; Import</h3>
+        <p class="settings-help">GPX / KML for other apps and devices, or a printed trail journal.</p>
+        <div class="settings-buttons">
+          <button id="gpx-export-btn" type="button">Export GPX</button>
+          <button id="gpx-import-btn" type="button">Import GPX</button>
+          <button id="kml-export-btn" type="button" title="Export to KML for Google Earth">Export KML</button>
+          <button id="print-btn" type="button">Print Journal</button>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h3>Danger zone</h3>
+        <p class="settings-help">Clears every hiked section, planned segment, and note in the active profile. Cannot be undone unless you have a backup saved.</p>
+        <div class="settings-buttons">
+          <button id="reset-btn" type="button" class="settings-danger">Reset profile data</button>
+        </div>
+      </section>
+    </div>
+    <div class="modal-actions">
+      <button id="settings-close" class="primary">Close</button>
+    </div>
+  </div>
+</div>
+
 <style>
   #stats-body .stat-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 24px; margin: 12px 0; }
   #stats-body .stat-grid .label { color: var(--muted); }
@@ -1344,7 +1454,7 @@
     <div class="intro-grid">
       <div><div class="intro-icon">🥾</div><div class="intro-text"><strong>Mark hiked sections</strong><br><small>Tap a checkbox to log it. Use <strong>+ Trip</strong> to mark a whole stretch in two clicks.</small></div></div>
       <div><div class="intro-icon">🗓</div><div class="intro-text"><strong>Plan a trip</strong><br><small>Tap the bookmark icon on segments to plan them. <strong>Planned</strong> shows mileage, elevation, difficulty, and a day-by-day itinerary.</small></div></div>
-      <div><div class="intro-icon">🎒</div><div class="intro-text"><strong>Plan your pack</strong><br><small>Open <strong>⋯ More → Pack</strong> to track gear weight and condition. Share or import a pack from a URL.</small></div></div>
+      <div><div class="intro-icon">🎒</div><div class="intro-text"><strong>Plan your pack</strong><br><small>Tap the <strong>🎒 Pack</strong> tab to track gear weight and condition. Share or import a pack from a URL.</small></div></div>
       <div><div class="intro-icon">🔎</div><div class="intro-text"><strong>Search anything</strong><br><small>Press <kbd>/</kbd> or click the magnifier to jump to any peak, town, shelter, or road crossing.</small></div></div>
     </div>
     <p style="font-size: 12px; color: var(--muted); margin-top: 12px;">Sign in with Google (top right) to sync across devices. Your data is stored locally otherwise.</p>
@@ -1666,6 +1776,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=54"></script>
+<script src="app.js?v=55"></script>
 </body>
 </html>

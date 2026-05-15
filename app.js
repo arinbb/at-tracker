@@ -4931,12 +4931,60 @@
     $("bulk-date-skip").addEventListener("click", () => applyBulkDate(todayISO()));
     $("bulk-date-go").addEventListener("click", () => applyBulkDate($("bulk-date-input").value || todayISO()));
 
-    $("stats-btn").addEventListener("click", renderStats);
+    // Primary tab bar: route data-tab clicks to the right modal-open
+    // (or back to Tracker, which means closing whatever modal is open).
+    // The active class on the clicked tab is set immediately; closing
+    // the modal returns the active state to Tracker (see modal-bg
+    // click handlers below).
+    function activateTab(tabName) {
+      document.querySelectorAll(".primary-tabs [data-tab]").forEach((b) => {
+        const active = b.dataset.tab === tabName;
+        b.classList.toggle("active", active);
+        b.setAttribute("aria-selected", String(active));
+      });
+    }
+    function returnToTracker() { activateTab("tracker"); }
+    document.querySelectorAll(".primary-tabs [data-tab]").forEach((b) => {
+      b.addEventListener("click", () => {
+        const tab = b.dataset.tab;
+        if (tab === "tracker") {
+          // Close any open major modal and return to the default view.
+          ["planned-modal", "pack-modal", "stats-modal", "settings-modal"]
+            .forEach((id) => $(id)?.classList.remove("show"));
+          activateTab("tracker");
+          return;
+        }
+        activateTab(tab);
+        if (tab === "planner") renderPlannedSummary();
+        else if (tab === "pack") renderPack();
+        else if (tab === "stats") renderStats();
+        else if (tab === "settings") $("settings-modal")?.classList.add("show");
+      });
+    });
+    // When the user closes any major modal via its own Close button or by
+    // clicking the backdrop, revert the active tab to Tracker so the bar
+    // doesn't lie about what's visible.
+    ["planned-modal", "pack-modal", "stats-modal", "settings-modal"].forEach((id) => {
+      const m = $(id);
+      if (!m) return;
+      const observer = new MutationObserver(() => {
+        if (!m.classList.contains("show")) {
+          // Defer so other handlers (e.g. the modal-bg backdrop click)
+          // finish first; otherwise we'd race them.
+          setTimeout(() => {
+            const anyOpen = ["planned-modal", "pack-modal", "stats-modal", "settings-modal"]
+              .some((other) => $(other)?.classList.contains("show"));
+            if (!anyOpen) returnToTracker();
+          }, 0);
+        }
+      });
+      observer.observe(m, { attributes: true, attributeFilter: ["class"] });
+    });
+
     $("stats-close").addEventListener("click", () => $("stats-modal").classList.remove("show"));
-    $("planned-btn").addEventListener("click", renderPlannedSummary);
+    $("settings-close")?.addEventListener("click", () => $("settings-modal").classList.remove("show"));
     // Pack planner
     populatePackFormSelects();
-    $("pack-btn")?.addEventListener("click", renderPack);
     $("pack-close")?.addEventListener("click", () => $("pack-modal").classList.remove("show"));
     // Use the form's submit event (covers both the button click and Enter
     // in any input). Previously the form had an inline onsubmit that
