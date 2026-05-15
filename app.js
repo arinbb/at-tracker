@@ -58,6 +58,12 @@
   let trips = []; // [{id, name, createdAt, segs: [ids]}]; planned is derived from active trip
   let activeTripId = null;
   let notes = new Map();
+  // Partial completion. A segment can be "split at a point": you hiked the
+  // first `atMi` miles (ending at landmark `label`) on `date`, the rest is
+  // still to do. Invariant: a segId in `splits` is NOT in `progress`
+  // (fully hiked always wins and clears any split).
+  // Map<segId, { atMi: number, label: string, date: string }>
+  let splits = new Map();
   // Pack planner — single loadout per profile. Stored as { items: [...] }
   // where each item is { id, name, category, weight_oz, condition, notes,
   // worn, consumable }. See PACK_CATEGORIES / PACK_CONDITIONS below.
@@ -76,6 +82,9 @@
   let activeProfile = DEFAULT_PROFILE;
   let map = null;
   let segLayers = new Map();
+  // Green overlay polylines for the hiked portion of partial segments,
+  // drawn on top of the (unhiked-styled) base segment line.
+  let partialLayers = new Map();
   let shelterLayer = null;
   let lastShiftAnchor = null;
   let pendingBulkRange = null; // {from, to, ids}
@@ -105,6 +114,7 @@
   function plannedKey(name) { return `at-tracker-planned::${name}`; }
   function tripsKey(name) { return `at-tracker-trips::${name}`; }
   function packKey(name) { return `at-tracker-pack::${name}`; }
+  function splitsKey(name) { return `at-tracker-splits::${name}`; }
 
   // -------- Encoding (URL share) --------
   function encodeProgress(prog) {
@@ -605,6 +615,7 @@
     progress = loadProgressForActive();
     planned = loadPlannedForActive();
     notes = loadNotesForActive();
+    splits = loadSplitsForActive();
     pack = loadPackForActive();
     {
       const td = loadTripsForActive();
@@ -747,6 +758,51 @@
     safeSet(packKey(activeProfile), JSON.stringify(pack));
     scheduleCloudSave();
   }
+  function loadSplitsForActive() {
+    const raw = safeGet(splitsKey(activeProfile));
+    if (!raw) return new Map();
+    try {
+      const obj = JSON.parse(raw);
+      return new Map(
+        Object.entries(obj)
+          .map(([k, v]) => [Number(k), sanitizeSplit(v)])
+          .filter(([id, v]) => Number.isFinite(id) && v)
+      );
+    } catch (e) { return new Map(); }
+  }
+  // Validate one split record. Returns a clean copy or null if unusable.
+  function sanitizeSplit(v) {
+    if (!v || typeof v !== "object") return null;
+    const atMi = Number(v.atMi);
+    if (!Number.isFinite(atMi) || atMi <= 0) return null;
+    return {
+      atMi,
+      label: String(v.label || "").slice(0, 200),
+      date: typeof v.date === "string" ? v.date.slice(0, 10) : "",
+    };
+  }
+  function saveSplits() {
+    const obj = {};
+    for (const [k, v] of splits) obj[k] = v;
+    safeSet(splitsKey(activeProfile), JSON.stringify(obj));
+    scheduleCloudSave();
+  }
+  // Miles credited for a segment: full when fully hiked, the partial
+  // distance when split, otherwise zero. Single source of truth for every
+  // mileage rollup so partial progress counts everywhere consistently.
+  function hikedMilesOfSeg(seg) {
+    if (!seg) return 0;
+    if (progress.has(seg.id)) return seg.miles;
+    const sp = splits.get(seg.id);
+    if (sp) return Math.min(seg.miles, Math.max(0, sp.atMi));
+    return 0;
+  }
+  // The active partial for a segment, or null. A fully-hiked segment never
+  // reports a partial (fully hiked supersedes).
+  function segPartial(id) {
+    if (progress.has(id)) return null;
+    return splits.get(id) || null;
+  }
   function loadPrefs() {
     const raw = safeGet(LS_PREFS);
     if (!raw) return prefs;
@@ -886,6 +942,78 @@
     if (cur.length > 1) runs.push(cur);
     return runs.length > 0 ? runs : [geom];
   }
+  // Cumulative miles to each vertex of a [lon,lat] geometry.
+  function _geomCumMiles(geom) {
+    const KM_PER_MI = 1.609344;
+    const cum = [0];
+    for (let i = 1; i < geom.length; i++) {
+      cum[i] = cum[i - 1] + _havKm(geom[i - 1], geom[i]) / KM_PER_MI;
+    }
+    return cum;
+  }
+  // Named places (shelters + road crossings) that lie along a segment's
+  // path, with how far into the segment they are. These become the
+  // "split here" options so partial progress lands on a real landmark.
+  function splitCandidates(seg) {
+    const geom = seg && seg.geom;
+    if (!geom || geom.length < 2) return [];
+    const cum = _geomCumMiles(geom);
+    const segMi = seg.miles;
+    const landmarks = [];
+    for (const s of (DATA.shelters || [])) {
+      if (s && s.name && Number.isFinite(s.lat) && Number.isFinite(s.lon)) {
+        landmarks.push({ name: s.name, lat: s.lat, lon: s.lon });
+      }
+    }
+    for (const c of (DATA.crossings || [])) {
+      if (c && c.label && Number.isFinite(c.lat) && Number.isFinite(c.lon)) {
+        landmarks.push({ name: c.label, lat: c.lat, lon: c.lon });
+      }
+    }
+    const out = [];
+    const seen = new Set();
+    for (const lm of landmarks) {
+      let bestKm = Infinity;
+      let bestIdx = -1;
+      for (let i = 0; i < geom.length; i++) {
+        const d = _havKm([lm.lon, lm.lat], geom[i]);
+        if (d < bestKm) { bestKm = d; bestIdx = i; }
+      }
+      // Must actually be on this segment's corridor (~0.3 mi tolerance)
+      // and an interior point, not the start/end the segment already names.
+      if (bestKm > 0.5 || bestIdx < 0) continue;
+      const atMi = Math.round(cum[bestIdx] * 100) / 100;
+      if (atMi < 0.25 || atMi > segMi - 0.25) continue;
+      const key = lm.name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ label: lm.name, atMi });
+    }
+    out.sort((a, b) => a.atMi - b.atMi);
+    return out.slice(0, 30);
+  }
+  // The [lat,lon] poly-points covering the first `atMi` miles of a
+  // segment's geometry, with the final point interpolated so the hiked
+  // overlay ends exactly at the split, not at the nearest vertex.
+  function geomPrefixLatLngs(geom, atMi) {
+    if (!geom || geom.length < 2 || !(atMi > 0)) return [];
+    const KM_PER_MI = 1.609344;
+    const pts = [[geom[0][1], geom[0][0]]];
+    let acc = 0;
+    for (let i = 1; i < geom.length; i++) {
+      const segMi = _havKm(geom[i - 1], geom[i]) / KM_PER_MI;
+      if (acc + segMi >= atMi) {
+        const t = segMi > 0 ? (atMi - acc) / segMi : 0;
+        const lon = geom[i - 1][0] + (geom[i][0] - geom[i - 1][0]) * t;
+        const lat = geom[i - 1][1] + (geom[i][1] - geom[i - 1][1]) * t;
+        pts.push([lat, lon]);
+        return pts;
+      }
+      acc += segMi;
+      pts.push([geom[i][1], geom[i][0]]);
+    }
+    return pts;
+  }
   function drawSegmentsOnMap() {
     const bounds = L.latLngBounds([]);
     DATA.segments.forEach((seg) => {
@@ -981,6 +1109,44 @@
       const s = styleFor(id);
       layer.setStyle(s);
       if (progress.has(id)) layer.bringToFront();
+    }
+    refreshPartialOverlays();
+  }
+  // Add/update/remove the green "hiked so far" overlay for every partial
+  // segment. Keeps segLayers untouched (one base layer per segment) so
+  // hover/zoom/tooltip behavior is unchanged.
+  function refreshPartialOverlays() {
+    if (!map) return;
+    const wantIds = new Set();
+    for (const [id, sp] of splits) {
+      if (progress.has(id)) continue; // fully hiked supersedes
+      const seg = segIndex.get(id);
+      if (!seg || !seg.geom) continue;
+      const pts = geomPrefixLatLngs(seg.geom, Math.min(sp.atMi, seg.miles));
+      if (pts.length < 2) continue;
+      wantIds.add(id);
+      const color = _cssVar("--hike", "#2a7d3a");
+      const existing = partialLayers.get(id);
+      if (existing) {
+        existing.setLatLngs(pts);
+        existing.setStyle({ color });
+        existing.bringToFront();
+      } else {
+        const ov = L.polyline(pts, {
+          color, weight: 5, opacity: 0.95, lineCap: "round",
+          interactive: false, bubblingMouseEvents: false,
+        });
+        ov.addTo(map);
+        ov.bringToFront();
+        partialLayers.set(id, ov);
+      }
+    }
+    // Drop overlays for segments that are no longer partial.
+    for (const [id, ov] of partialLayers) {
+      if (!wantIds.has(id)) {
+        try { map.removeLayer(ov); } catch (e) {}
+        partialLayers.delete(id);
+      }
     }
   }
 
@@ -1488,15 +1654,28 @@
     const cumStart = segCumulative.get(seg.id) || 0;
     const displayMi = reverse ? (totalMi - (cumStart + seg.miles)) : cumStart;
     const isPlanned = planned.has(seg.id);
+    const sp = segPartial(seg.id);
+    const isPartial = !!sp;
     const today = todayISO();
-    return `<div class="seg${hiked ? " hiked" : ""}${isPlanned ? " planned" : ""}" data-seg="${seg.id}">` +
+    const milesText = isPartial
+      ? `${Math.min(sp.atMi, seg.miles).toFixed(1)}/${seg.miles.toFixed(1)} mi`
+      : `${seg.miles.toFixed(1)} mi`;
+    const splitBtn = hiked
+      ? ""
+      : `<button class="split-btn${isPartial ? " on" : ""}" data-split="${seg.id}" title="${isPartial ? "Edit partial progress" : "Mark partially hiked (turned back partway)"}" aria-label="Mark partially hiked" aria-pressed="${isPartial}"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 8h5"/><circle cx="8.5" cy="8" r="2.1" fill="${isPartial ? "currentColor" : "none"}"/><path d="M10.6 8h4" stroke-dasharray="2 2"/></svg></button>`;
+    const partialRow = isPartial
+      ? `<div class="partial-row">Partly done — hiked <strong>${Math.min(sp.atMi, seg.miles).toFixed(1)} mi</strong>${sp.label ? ` to <strong>${escapeHtml(sp.label)}</strong>` : ""}${sp.date ? ` on ${escapeHtml(sp.date)}` : ""}; ${Math.max(0, seg.miles - sp.atMi).toFixed(1)} mi left</div>`
+      : "";
+    return `<div class="seg${hiked ? " hiked" : ""}${isPartial ? " partial" : ""}${isPlanned ? " planned" : ""}" data-seg="${seg.id}">` +
       `<input type="checkbox" data-toggle="${seg.id}" ${hiked ? "checked" : ""} title="Click to mark hiked; shift-click (or use Multi-select) to mark a range" aria-label="Mark ${escapeHtml(seg.from)} to ${escapeHtml(seg.to)} as hiked"/>` +
       `<div class="name">${escapeHtml(seg.from)}<span class="arrow">→</span>${escapeHtml(seg.to)}</div>` +
-      `<div class="miles"><span class="miles-text">${seg.miles.toFixed(1)} mi<span class="cum">@ ${displayMi.toFixed(1)} mi</span></span>` +
+      `<div class="miles"><span class="miles-text">${milesText}<span class="cum">@ ${displayMi.toFixed(1)} mi</span></span>` +
+      splitBtn +
       `<button class="plan-btn" data-plan="${seg.id}" title="${isPlanned ? "Remove from planned" : "Mark as next planned hike"}" aria-label="${isPlanned ? "Remove from planned" : "Mark as planned"}" aria-pressed="${isPlanned}"><svg viewBox="0 0 16 16" fill="${isPlanned ? "currentColor" : "none"}" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M4 1.5h8v13l-4-2.5-4 2.5z"/></svg></button>` +
       `<button class="zoom-btn" data-zoom="${seg.id}" title="Zoom map to this section" aria-label="Zoom to section"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001q.044.06.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1 1 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0M6.5 3a.5.5 0 0 1 .5.5V6h2.5a.5.5 0 0 1 0 1H7v2.5a.5.5 0 0 1-1 0V7H3.5a.5.5 0 0 1 0-1H6V3.5a.5.5 0 0 1 .5-.5"/></svg></button>` +
       loreButtonHTML(seg.id) +
       `</div>` +
+      partialRow +
       `<div class="date-row"><label style="font-size:12px;color:var(--muted)">Date:</label><input type="date" data-date="${seg.id}" value="${escapeHtml(date)}" max="${today}" /></div>` +
       `<div class="notes-row"><textarea data-note="${seg.id}" placeholder="Notes (weather, who you hiked with, conditions…)" rows="1">${escapeHtml(note)}</textarea></div>` +
       loreRowHTML(seg.id) +
@@ -1563,7 +1742,7 @@
       });
       if (visible.length === 0 && (filterText || onlyHiked || onlyPlanned)) continue;
       const hikedCount = segs.filter((s) => progress.has(s.id)).length;
-      const hikedMi = segs.filter((s) => progress.has(s.id)).reduce((a, s) => a + s.miles, 0);
+      const hikedMi = segs.reduce((a, s) => a + hikedMilesOfSeg(s), 0);
       const totalStateMi = segs.reduce((a, s) => a + s.miles, 0);
       const expandedByFilter = !!(filterText || onlyHiked || onlyPlanned);
       const isOpen = expandedByFilter || openStates.has(st.name);
@@ -1599,7 +1778,7 @@
           const firstName = chunkSegs[0].from;
           const lastName = chunkSegs[chunkSegs.length - 1].to;
           const chunkMi = chunkSegs.reduce((a, s) => a + s.miles, 0);
-          const chunkHikedMi = chunkSegs.filter((s) => progress.has(s.id)).reduce((a, s) => a + s.miles, 0);
+          const chunkHikedMi = chunkSegs.reduce((a, s) => a + hikedMilesOfSeg(s), 0);
           html.push(`<div class="chunk${chunkOpen ? "" : " collapsed"}" data-chunk="${escapeHtml(chunkKey)}">`);
           html.push(`<div class="chunk-header"><svg class="caret" viewBox="0 0 12 12" fill="currentColor"><path d="M3 4.5l3 3 3-3"/></svg>`);
           html.push(`<span>${escapeHtml(firstName.slice(0, 30))} → ${escapeHtml(lastName.slice(0, 30))}</span>`);
@@ -1619,11 +1798,9 @@
     const total = DATA.segments.length;
     const totalMi = DATA.segments.reduce((a, s) => a + s.miles, 0);
     const done = progress.size;
+    // Section count = fully hiked only; mileage credits partial splits too.
     let doneMi = 0;
-    for (const id of progress.keys()) {
-      const s = segIndex.get(id);
-      if (s) doneMi += s.miles;
-    }
+    for (const s of DATA.segments) doneMi += hikedMilesOfSeg(s);
     statSegs.textContent = done;
     statTotalSegs.textContent = total;
     statMiles.textContent = doneMi.toFixed(1);
@@ -1728,7 +1905,10 @@
       .map((id) => segIndex.get(id))
       .filter(Boolean)
       .sort((a, b) => a.id - b.id);
-    const doneMi = sortedHiked.reduce((a, s) => a + s.miles, 0);
+    // Headline mileage includes partial-split credit (matches the header
+    // bar). Run/trip/year breakdowns below stay fully-hiked-only since a
+    // partial segment doesn't complete an unbroken stretch or a "trip".
+    const doneMi = DATA.segments.reduce((a, s) => a + hikedMilesOfSeg(s), 0);
 
     // Longest unbroken stretch: walk all segments in id order, accumulate miles
     // for runs of consecutive hiked ids; track the longest run.
@@ -1781,7 +1961,7 @@
       if (!stateProgress.has(st)) stateProgress.set(st, { total: 0, done: 0 });
       const p = stateProgress.get(st);
       p.total += seg.miles;
-      if (progress.has(seg.id)) p.done += seg.miles;
+      p.done += hikedMilesOfSeg(seg);
     }
     // Order by canonical south-to-north for display.
     const STATE_ORDER = [
@@ -2184,6 +2364,46 @@
     if (!json) return null;
     try {
       return _sanitizePack(JSON.parse(json));
+    } catch (e) {
+      return null;
+    }
+  }
+  // Splits share-encoding: compact { id: [atMi, label, date] } map,
+  // LZString-compressed like the pack code. Returns "" when empty.
+  function encodeSplits(m) {
+    try {
+      if (!m || m.size === 0) return "";
+      const obj = {};
+      for (const [id, v] of m) obj[id] = [v.atMi, v.label || "", v.date || ""];
+      const json = JSON.stringify(obj);
+      if (typeof LZString !== "undefined" && LZString.compressToEncodedURIComponent) {
+        return LZString.compressToEncodedURIComponent(json);
+      }
+      return "";
+    } catch (e) {
+      return "";
+    }
+  }
+  function decodeSplits(s) {
+    if (!s) return null;
+    let json = null;
+    if (typeof LZString !== "undefined" && LZString.decompressFromEncodedURIComponent) {
+      try {
+        const out = LZString.decompressFromEncodedURIComponent(s);
+        if (out) json = out;
+      } catch (e) {}
+    }
+    if (!json) return null;
+    try {
+      const obj = JSON.parse(json);
+      const m = new Map();
+      for (const [k, arr] of Object.entries(obj)) {
+        const id = Number(k);
+        if (!Number.isFinite(id) || !Array.isArray(arr)) continue;
+        const rec = sanitizeSplit({ atMi: arr[0], label: arr[1], date: arr[2] });
+        if (rec) m.set(id, rec);
+      }
+      return m;
     } catch (e) {
       return null;
     }
@@ -3587,6 +3807,8 @@
   function toggleSegment(id, checked, date) {
     if (checked) {
       progress.set(id, date || todayISO());
+      // Fully hiked supersedes any partial split on this segment.
+      if (splits.has(id)) { splits.delete(id); saveSplits(); }
     } else {
       progress.delete(id);
     }
@@ -3654,6 +3876,13 @@
       e.stopPropagation();
       const row = loreBtn.closest(".seg");
       if (row) row.classList.toggle("lore-open");
+      return;
+    }
+    const splitBtn = e.target.closest("[data-split]");
+    if (splitBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      openSplitModal(Number(splitBtn.dataset.split));
       return;
     }
     const planBtn = e.target.closest("[data-plan]");
@@ -3982,14 +4211,96 @@
   }
 
   // -------- Modals --------
+  // -------- Split / partial-progress modal --------
+  let splitModalSegId = null;
+  function openSplitModal(id) {
+    const seg = segIndex.get(id);
+    if (!seg) return;
+    splitModalSegId = id;
+    $("split-seg-name").textContent = `${seg.from} → ${seg.to} (${seg.miles.toFixed(1)} mi)`;
+    $("split-error").textContent = "";
+    const existing = splits.get(id) || null;
+    const cands = splitCandidates(seg);
+    const host = $("split-candidates");
+    if (cands.length === 0) {
+      host.innerHTML = "";
+    } else {
+      host.innerHTML = cands
+        .map((c, i) => {
+          const checked = existing && existing.label === c.label ? " checked" : "";
+          return `<label><input type="radio" name="split-pt" value="${c.atMi}" data-label="${escapeHtml(c.label)}"${checked}/>` +
+            `<span>${escapeHtml(c.label)}</span>` +
+            `<span class="cand-mi">${c.atMi.toFixed(1)} mi</span></label>`;
+        })
+        .join("");
+    }
+    // Prefill custom miles only when the existing split isn't one of the
+    // listed landmarks (a free mile point).
+    const isListed = existing && cands.some((c) => c.label === existing.label && c.atMi === existing.atMi);
+    $("split-custom-mi").value = existing && !isListed ? existing.atMi : "";
+    $("split-date").value = (existing && existing.date) || todayISO();
+    $("split-date").max = todayISO();
+    $("split-clear").style.display = existing ? "" : "none";
+    $("split-modal").classList.add("show");
+  }
+  function saveSplitFromModal() {
+    const id = splitModalSegId;
+    const seg = segIndex.get(id);
+    if (!seg) return;
+    const err = $("split-error");
+    err.textContent = "";
+    const radio = document.querySelector('#split-candidates input[name="split-pt"]:checked');
+    const customRaw = $("split-custom-mi").value.trim();
+    let atMi = null;
+    let label = "";
+    if (customRaw !== "") {
+      atMi = Number(customRaw);
+      label = "";
+    } else if (radio) {
+      atMi = Number(radio.value);
+      label = radio.dataset.label || "";
+    }
+    if (atMi === null || !Number.isFinite(atMi)) {
+      err.textContent = "Pick a landmark or enter how many miles you hiked.";
+      return;
+    }
+    if (atMi <= 0 || atMi >= seg.miles) {
+      err.textContent = `Enter a distance between 0 and ${seg.miles.toFixed(1)} mi. To mark the whole section, use the checkbox instead.`;
+      return;
+    }
+    const date = $("split-date").value || "";
+    splits.set(id, { atMi: Math.round(atMi * 100) / 100, label, date });
+    progress.delete(id); // partial and fully-hiked are mutually exclusive
+    saveSplits();
+    updateStats();
+    refreshMapStyles();
+    updateSegRowInPlace(id);
+    $("split-modal").classList.remove("show");
+    splitModalSegId = null;
+  }
+  function clearSplitFromModal() {
+    const id = splitModalSegId;
+    if (id != null && splits.has(id)) {
+      splits.delete(id);
+      saveSplits();
+      updateStats();
+      refreshMapStyles();
+      updateSegRowInPlace(id);
+    }
+    $("split-modal").classList.remove("show");
+    splitModalSegId = null;
+  }
+
   function openShare() {
     const code = encodeProgress(progress);
     const planCode = encodePlanned(planned);
     const packCode = encodePack(pack);
+    const splitCode = encodeSplits(splits);
     const params = new URLSearchParams();
     if (code) params.set("c", code);
     if (planCode) params.set("pl", planCode);
     if (packCode) params.set("pk", packCode);
+    if (splitCode) params.set("sp", splitCode);
     if (activeProfile !== DEFAULT_PROFILE) params.set("p", activeProfile);
     const hashStr = params.toString();
     const url = `${location.origin}${location.pathname}${hashStr ? "#" + hashStr : ""}`;
@@ -4013,7 +4324,7 @@
     // c= param out of a URL; if it's a URL with no c= (e.g. only planned or
     // pack was shared), use an empty code rather than feeding the whole URL
     // to atob() — that throws and aborts the entire restore before pack.
-    const looksLikeUrlOrParams = /[#?&]|(?:^|[#&?])(?:c|pl|pk|p)=/.test(raw);
+    const looksLikeUrlOrParams = /[#?&]|(?:^|[#&?])(?:c|pl|pk|sp|p)=/.test(raw);
     let code = raw;
     let profileName = null;
     const m = raw.match(/[#&?]c=([A-Za-z0-9_-]+)/);
@@ -4032,10 +4343,17 @@
     if (pkm) {
       try { pkCode = decodeURIComponent(pkm[1]); } catch (e) { pkCode = pkm[1]; }
     }
+    // Splits code (sp=…). Same optional/URL-decode treatment as pk=.
+    let spCode = "";
+    const spm = raw.match(/[#&?]sp=([^&]+)/);
+    if (spm) {
+      try { spCode = decodeURIComponent(spm[1]); } catch (e) { spCode = spm[1]; }
+    }
     try {
       const nextProg = decodeProgress(code);
       const nextPlanned = decodePlanned(plCode);
       const nextPack = pkCode ? decodePack(pkCode) : null;
+      const nextSplits = spCode ? decodeSplits(spCode) : null;
       if (profileName && profileName !== activeProfile) {
         ensureProfile(profileName);
         activeProfile = profileName;
@@ -4045,6 +4363,10 @@
       progress = nextProg;
       planned = nextPlanned;
       saveProgress();
+      if (nextSplits) {
+        splits = nextSplits;
+        saveSplits();
+      }
       if (nextPack) {
         pack = nextPack;
         savePack();
@@ -4063,8 +4385,10 @@
     progress = new Map();
     planned = new Set();
     notes = new Map();
+    splits = new Map();
     saveProgress();
     saveNotes();
+    saveSplits();
     renderSections();
     updateStats();
     refreshMapStyles();
@@ -4082,8 +4406,10 @@
     progress = new Map();
     planned = new Set();
     notes = new Map();
+    splits = new Map();
     saveProgress();
     saveNotes();
+    saveSplits();
     renderProfileSelect();
     renderSections();
     updateStats();
@@ -4096,10 +4422,13 @@
     // Move localStorage data
     const oldProg = safeGet(progressKey(activeProfile));
     const oldNotes = safeGet(notesKey(activeProfile));
+    const oldSplits = safeGet(splitsKey(activeProfile));
     if (oldProg) safeSet(progressKey(name), oldProg);
     if (oldNotes) safeSet(notesKey(name), oldNotes);
+    if (oldSplits) safeSet(splitsKey(name), oldSplits);
     try { localStorage.removeItem(progressKey(activeProfile)); } catch (e) {}
     try { localStorage.removeItem(notesKey(activeProfile)); } catch (e) {}
+    try { localStorage.removeItem(splitsKey(activeProfile)); } catch (e) {}
     profiles = profiles.map(p => p === activeProfile ? name : p);
     saveProfileList();
     activeProfile = name;
@@ -4112,6 +4441,7 @@
     if (!confirm(`Delete profile "${activeProfile}" and all its data? This cannot be undone.`)) return;
     try { localStorage.removeItem(progressKey(activeProfile)); } catch (e) {}
     try { localStorage.removeItem(notesKey(activeProfile)); } catch (e) {}
+    try { localStorage.removeItem(splitsKey(activeProfile)); } catch (e) {}
     profiles = profiles.filter(p => p !== activeProfile);
     saveProfileList();
     activeProfile = profiles[0];
@@ -4119,6 +4449,7 @@
     progress = loadProgressForActive();
     planned = loadPlannedForActive();
     notes = loadNotesForActive();
+    splits = loadSplitsForActive();
     pack = loadPackForActive();
     {
       const td = loadTripsForActive();
@@ -4154,12 +4485,14 @@
       const nt = safeGet(notesKey(name));
       const tr = safeGet(tripsKey(name));
       const pk = safeGet(packKey(name));
+      const sp = safeGet(splitsKey(name));
       profileData[name] = {
         hiked: prog ? safeJsonParse(prog, {}) : {},
         planned: pl ? safeJsonParse(pl, []) : [],
         notes: nt ? safeJsonParse(nt, {}) : {},
         trips: tr ? safeJsonParse(tr, { trips: [], activeTripId: null }) : { trips: [], activeTripId: null },
         pack: pk ? safeJsonParse(pk, { items: [] }) : { items: [] },
+        splits: sp ? safeJsonParse(sp, {}) : {},
       };
     }
     return {
@@ -4189,6 +4522,7 @@
         if (pdata.notes) safeSet(notesKey(name), JSON.stringify(pdata.notes));
         if (pdata.trips) safeSet(tripsKey(name), JSON.stringify(pdata.trips));
         if (pdata.pack) safeSet(packKey(name), JSON.stringify(pdata.pack));
+        if (pdata.splits) safeSet(splitsKey(name), JSON.stringify(pdata.splits));
       }
       if (data.prefs) {
         prefs = { ...prefs, ...data.prefs };
@@ -4203,6 +4537,7 @@
       progress = loadProgressForActive();
       planned = loadPlannedForActive();
       notes = loadNotesForActive();
+      splits = loadSplitsForActive();
       pack = loadPackForActive();
       const td = loadTripsForActive();
       trips = td.trips;
@@ -4290,7 +4625,7 @@
   function buildBackup() {
     return {
       app: "at-section-tracker",
-      version: 3,
+      version: 4,
       exported: new Date().toISOString(),
       profile: activeProfile,
       hiked: Object.fromEntries(progress),
@@ -4298,6 +4633,7 @@
       trips: { trips, activeTripId },
       notes: Object.fromEntries([...notes].filter(([, v]) => v)),
       pack: pack && pack.items ? { items: pack.items } : null,
+      splits: splits.size ? Object.fromEntries(splits) : null,
     };
   }
   function saveBackupFile() {
@@ -4356,6 +4692,20 @@
         renderPack();
       }
     }
+    // Partial splits (backup version 4). Absent in older backups —
+    // preserve the current splits instead of clearing them.
+    let splitsRestored = 0;
+    if (obj.splits && typeof obj.splits === "object") {
+      const m = new Map();
+      for (const [k, v] of Object.entries(obj.splits)) {
+        const id = Number(k);
+        const rec = sanitizeSplit(v);
+        if (Number.isFinite(id) && rec) m.set(id, rec);
+      }
+      splits = m;
+      splitsRestored = m.size;
+      saveSplits();
+    }
     saveProgress();
     saveNotes();
     renderProfileSelect();
@@ -4367,6 +4717,7 @@
       `${planned.size} planned`,
       `${notes.size} notes`,
     ];
+    if (splitsRestored > 0) parts.push(`${splitsRestored} partial`);
     if (packRestored > 0) parts.push(`${packRestored} pack items`);
     const counts = parts.join(" · ");
     status.textContent = `Restored profile "${profileName}" (${counts}).`;
@@ -4789,6 +5140,7 @@
     progress = loadProgressForActive();
     planned = loadPlannedForActive();
     notes = loadNotesForActive();
+    splits = loadSplitsForActive();
     pack = loadPackForActive();
     {
       const td = loadTripsForActive();
@@ -4960,6 +5312,21 @@
     });
     $("load-cancel").addEventListener("click", () => $("load-modal").classList.remove("show"));
     $("load-go").addEventListener("click", doLoad);
+    $("split-save")?.addEventListener("click", saveSplitFromModal);
+    $("split-clear")?.addEventListener("click", clearSplitFromModal);
+    $("split-cancel")?.addEventListener("click", () => {
+      $("split-modal").classList.remove("show");
+      splitModalSegId = null;
+    });
+    // Typing a custom mileage clears any landmark radio selection.
+    $("split-custom-mi")?.addEventListener("input", () => {
+      const r = document.querySelector('#split-candidates input[name="split-pt"]:checked');
+      if (r && $("split-custom-mi").value.trim() !== "") r.checked = false;
+    });
+    // Picking a landmark clears the custom mileage field.
+    $("split-candidates")?.addEventListener("change", (e) => {
+      if (e.target && e.target.name === "split-pt") $("split-custom-mi").value = "";
+    });
     $("load-file").addEventListener("change", (e) => {
       const f = e.target.files[0];
       if (f) loadBackupFile(f);

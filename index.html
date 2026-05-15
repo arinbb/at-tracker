@@ -21,6 +21,8 @@
     --hike-bg: #d9ecdb;
     --plan: #1a5fb4;
     --plan-bg: #d8e6f7;
+    --partial: #b06f1a;
+    --partial-bg: #f6e9d4;
     --accent: #8b3a2f;
     --hover: #faf8f3;
     --input-bg: #ffffff;
@@ -38,6 +40,8 @@
     --hike-bg: #2a3a2a;
     --plan: #6ba4d8;
     --plan-bg: #1f2c3d;
+    --partial: #d6a24e;
+    --partial-bg: #3a2f1c;
     --accent: #d97a64;
     --hover: #2f2b25;
     --input-bg: #1c1a17;
@@ -260,6 +264,36 @@
   .seg .plan-btn:hover { background: var(--hover); color: var(--plan); }
   .seg.planned .plan-btn { color: var(--plan); }
   .seg .plan-btn svg { width: 14px; height: 14px; display: block; }
+  /* Partial completion — distinct amber treatment, between unhiked and
+     fully hiked. Stats stay visible like hiked/planned rows. */
+  .seg.partial { background: var(--partial-bg); }
+  .seg.partial.planned { background: var(--partial-bg); }
+  .seg.partial .miles .miles-text { opacity: 1; pointer-events: auto; }
+  .seg .split-btn {
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    padding: 0;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    color: var(--muted);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .seg .split-btn:hover { background: var(--hover); color: var(--partial); }
+  .seg .split-btn.on { color: var(--partial); }
+  .seg .split-btn svg { width: 15px; height: 15px; display: block; }
+  .partial-row {
+    grid-column: 2 / 4;
+    font-size: 11.5px;
+    color: var(--partial);
+    margin-top: 3px;
+    line-height: 1.35;
+  }
+  .seg.partial .notes-row { display: block; }
   .seg .miles .cum { display: block; font-size: 10.5px; opacity: 0.75; }
   .seg .date-row { grid-column: 2 / 4; display: flex; gap: 8px; align-items: center; margin-top: 4px; flex-wrap: wrap; }
   .seg.hiked .date-row { display: flex; }
@@ -771,6 +805,35 @@
   }
 
   /* ===== Settings modal — single scrollable panel grouped by section. */
+  /* Split / partial-progress modal */
+  .split-candidates {
+    max-height: 240px; overflow-y: auto; margin: 10px 0;
+    border: 1px solid var(--rule); border-radius: 6px;
+  }
+  .split-candidates:empty { display: none; }
+  .split-candidates label {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; font-size: 13px; cursor: pointer;
+    border-bottom: 1px solid var(--rule);
+  }
+  .split-candidates label:last-child { border-bottom: none; }
+  .split-candidates label:hover { background: var(--hover); }
+  .split-candidates input[type=radio] { margin: 0; flex-shrink: 0; }
+  .split-candidates .cand-mi {
+    margin-left: auto; color: var(--muted);
+    font-variant-numeric: tabular-nums; font-size: 12px;
+  }
+  .split-custom-row, .split-date-row {
+    display: flex; align-items: center; gap: 10px;
+    margin: 10px 0; font-size: 13px;
+  }
+  .split-custom-row span, .split-date-row span { color: var(--muted); flex: 1; }
+  .split-custom-row input, .split-date-row input {
+    font: inherit; padding: 4px 8px; border: 1px solid var(--rule);
+    border-radius: 4px; background: var(--input-bg); width: 110px;
+  }
+  .split-error { color: var(--accent); font-size: 12px; min-height: 16px; margin: 4px 0; }
+  .split-error:empty { display: none; }
   .settings-body { font-size: 13px; }
   .settings-section { margin: 14px 0; padding: 12px; background: var(--panel-alt); border: 1px solid var(--rule); border-radius: 6px; }
   .settings-section h3 {
@@ -878,6 +941,7 @@
   body.touch .seg input[type=checkbox] { transform: scale(1.2); margin: 4px 4px 0 0; }
   body.touch .seg .plan-btn,
   body.touch .seg .zoom-btn,
+  body.touch .seg .split-btn,
   body.touch .seg .lore-btn { width: 28px; height: 28px; }
   /* Don't bloat the small chunk-collapse caret or in-popover form rows */
   body.touch .overflow-trigger,
@@ -998,11 +1062,11 @@
 <div class="modal-bg" id="share-modal" style="z-index: 1050;">
   <div class="modal" style="max-width: 580px;">
     <h2>Share / save your progress</h2>
-    <p style="margin-top: 4px;"><strong>Full backup file</strong> — includes hiked sections, planned segments, dates, notes, and pack. Recommended for archival.</p>
+    <p style="margin-top: 4px;"><strong>Full backup file</strong> — includes hiked sections, partial progress, planned segments, dates, notes, and pack. Recommended for archival.</p>
     <div class="modal-actions" style="justify-content: flex-start; margin: 8px 0 16px;">
       <button id="save-file" class="primary">Download backup file</button>
     </div>
-    <p style="margin-top: 4px;"><strong>Share URL</strong> — quick to send. Includes hiked, planned, and pack; not notes.</p>
+    <p style="margin-top: 4px;"><strong>Share URL</strong> — quick to send. Includes hiked, partial, planned, and pack; not notes.</p>
     <input type="text" id="share-url" readonly />
     <details style="margin-top: 8px;">
       <summary style="font-size: 12px; cursor: pointer; color: var(--muted);">Show short code</summary>
@@ -1018,7 +1082,7 @@
 <div class="modal-bg" id="load-modal" style="z-index: 1050;">
   <div class="modal" style="max-width: 580px;">
     <h2>Restore progress</h2>
-    <p style="margin-top: 4px;"><strong>From a backup file</strong> — restores everything (hiked, planned, notes, pack, profile name).</p>
+    <p style="margin-top: 4px;"><strong>From a backup file</strong> — restores everything (hiked, partial, planned, notes, pack, profile name).</p>
     <input type="file" id="load-file" accept=".json,application/json" />
     <div id="load-file-status" style="font-size: 12px; color: var(--muted); margin-top: 4px;"></div>
 
@@ -1027,6 +1091,29 @@
     <div class="modal-actions">
       <button id="load-cancel">Cancel</button>
       <button id="load-go" class="primary">Load code</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="split-modal" style="z-index: 1050;">
+  <div class="modal" style="max-width: 520px;">
+    <h2>Partial progress</h2>
+    <p id="split-seg-name" style="margin: 0 0 4px; font-weight: 600; color: var(--ink);"></p>
+    <p style="margin-top: 4px;">You hiked part of this section and turned back. Pick where you stopped — its mileage counts toward your total, and the rest stays on your to-do list.</p>
+    <div id="split-candidates" class="split-candidates"></div>
+    <label class="split-custom-row">
+      <span>Or miles hiked from the start of this section:</span>
+      <input type="number" id="split-custom-mi" min="0" step="0.1" placeholder="e.g. 6.5" />
+    </label>
+    <label class="split-date-row">
+      <span>Date hiked (optional):</span>
+      <input type="date" id="split-date" />
+    </label>
+    <div id="split-error" class="split-error" role="alert"></div>
+    <div class="modal-actions">
+      <button id="split-clear" style="margin-right: auto;">Clear partial</button>
+      <button id="split-cancel">Cancel</button>
+      <button id="split-save" class="primary">Save partial</button>
     </div>
   </div>
 </div>
@@ -1776,6 +1863,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=59"></script>
+<script src="app.js?v=60"></script>
 </body>
 </html>
