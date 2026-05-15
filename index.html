@@ -811,6 +811,7 @@
     border: 1px solid var(--rule); border-radius: 6px;
   }
   .split-candidates:empty { display: none; }
+  .split-no-cands { padding: 8px 10px; font-size: 12px; color: var(--muted); font-style: italic; }
   .split-candidates label {
     display: flex; align-items: center; gap: 8px;
     padding: 7px 10px; font-size: 13px; cursor: pointer;
@@ -837,21 +838,58 @@
      so it isn't black-on-black in dark mode. */
   body.theme-dark .split-custom-row input,
   body.theme-dark .split-date-row input { color-scheme: dark; }
-  .split-preview { margin: 12px 0 4px; }
-  .split-preview-bar {
-    height: 12px; border-radius: 6px; overflow: hidden;
+  .split-preview { margin: 14px 0 4px; }
+  /* Interactive "where did you stop" bar: the section start→end as a
+     track you tap or drag. Hiked portion green, the rest unhiked-brown. */
+  .split-scrub {
+    position: relative; height: 30px; border-radius: 8px;
     background: var(--trail-unhiked, #7a4f3a);
     border: 1px solid var(--rule);
+    cursor: pointer; touch-action: none; overflow: visible;
+    user-select: none; -webkit-user-select: none;
   }
-  .split-preview-done {
-    height: 100%; width: 0%;
-    background: var(--hike); border-radius: 6px 0 0 6px;
-    transition: width .12s ease;
+  .split-scrub:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .split-scrub-fill {
+    position: absolute; left: 0; top: 0; bottom: 0; width: 0%;
+    background: var(--hike); border-radius: 7px 0 0 7px;
+    transition: width .08s ease; pointer-events: none;
   }
+  .split-scrub-ticks { position: absolute; inset: 0; pointer-events: none; }
+  .split-scrub-ticks .tick {
+    position: absolute; top: 0; bottom: 0; width: 2px;
+    background: rgba(255,255,255,0.55); transform: translateX(-1px);
+  }
+  .split-scrub-ticks .tick-label {
+    position: absolute; top: 100%; margin-top: 3px;
+    font-size: 10px; color: var(--muted); white-space: nowrap;
+    transform: translateX(-50%);
+  }
+  .split-scrub-handle {
+    position: absolute; top: 50%; left: 0%;
+    width: 16px; height: 30px; border-radius: 5px;
+    background: var(--panel); border: 2px solid var(--hike);
+    box-shadow: 0 1px 4px rgba(0,0,0,.35);
+    transform: translate(-50%, -50%); pointer-events: none;
+    transition: left .08s ease;
+  }
+  .split-scrub-ends {
+    display: flex; justify-content: space-between;
+    font-size: 10.5px; color: var(--muted); margin-top: 4px;
+    gap: 8px;
+  }
+  .split-scrub-ends span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%; }
+  .split-scrub-ends span:last-child { text-align: right; }
+  .split-preview-done { /* legacy id reused as the fill */ }
   .split-preview-cap {
-    font-size: 11.5px; color: var(--muted); margin-top: 5px;
-    font-variant-numeric: tabular-nums;
+    font-size: 12px; color: var(--ink); margin-top: 10px;
+    font-variant-numeric: tabular-nums; font-weight: 500;
   }
+  .split-more { margin: 12px 0 0; }
+  .split-more > summary {
+    font-size: 12px; color: var(--muted); cursor: pointer;
+    list-style: revert; padding: 4px 0;
+  }
+  .split-more[open] > summary { margin-bottom: 6px; }
   .split-error { color: var(--accent); font-size: 12px; min-height: 16px; margin: 4px 0; }
   .split-error:empty { display: none; }
   .settings-body { font-size: 13px; }
@@ -1119,22 +1157,33 @@
   <div class="modal" style="max-width: 520px;">
     <h2>Partial progress</h2>
     <p id="split-seg-name" style="margin: 0 0 4px; font-weight: 600; color: var(--ink);"></p>
-    <p style="margin-top: 4px;">You hiked part of this section and turned back. Pick where you stopped — its mileage counts toward your total, and the rest stays on your to-do list.</p>
-    <div id="split-candidates" class="split-candidates"></div>
-    <label class="split-custom-row">
-      <span>Or miles hiked from the start of this section:</span>
-      <input type="number" id="split-custom-mi" min="0" step="0.1" placeholder="e.g. 6.5" />
-    </label>
+    <p style="margin-top: 4px;">You hiked part of this section and turned back. <strong>Tap or drag along the bar</strong> to mark where you stopped — its mileage counts toward your total, and the rest stays on your to-do list.</p>
+    <div class="split-preview" id="split-preview">
+      <div class="split-scrub" id="split-scrub" role="slider" tabindex="0"
+           aria-label="Where you stopped, in miles from the start of the section"
+           aria-valuemin="0" aria-valuenow="0">
+        <div class="split-scrub-fill" id="split-preview-done"></div>
+        <div class="split-scrub-ticks" id="split-scrub-ticks"></div>
+        <div class="split-scrub-handle" id="split-scrub-handle"></div>
+      </div>
+      <div class="split-scrub-ends">
+        <span id="split-scrub-start">start</span>
+        <span id="split-scrub-end">end</span>
+      </div>
+      <div class="split-preview-cap" id="split-preview-cap"></div>
+    </div>
+    <details class="split-more">
+      <summary>More precise: snap to a landmark or type the exact mileage</summary>
+      <div id="split-candidates" class="split-candidates"></div>
+      <label class="split-custom-row">
+        <span>Miles hiked from the start of this section:</span>
+        <input type="number" id="split-custom-mi" min="0" step="0.1" placeholder="e.g. 6.5" />
+      </label>
+    </details>
     <label class="split-date-row">
       <span>Date hiked (optional):</span>
       <input type="date" id="split-date" />
     </label>
-    <div class="split-preview" id="split-preview" aria-hidden="true">
-      <div class="split-preview-bar">
-        <div class="split-preview-done" id="split-preview-done"></div>
-      </div>
-      <div class="split-preview-cap" id="split-preview-cap"></div>
-    </div>
     <div id="split-error" class="split-error" role="alert"></div>
     <div class="modal-actions">
       <button id="split-clear" style="margin-right: auto;">Clear partial</button>
@@ -1889,6 +1938,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=61"></script>
+<script src="app.js?v=62"></script>
 </body>
 </html>

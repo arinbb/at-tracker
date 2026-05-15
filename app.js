@@ -4213,6 +4213,7 @@
   // -------- Modals --------
   // -------- Split / partial-progress modal --------
   let splitModalSegId = null;
+  let splitCands = [];
   function openSplitModal(id) {
     const seg = segIndex.get(id);
     if (!seg) return;
@@ -4221,9 +4222,10 @@
     $("split-error").textContent = "";
     const existing = splits.get(id) || null;
     const cands = splitCandidates(seg);
+    splitCands = cands;
     const host = $("split-candidates");
     if (cands.length === 0) {
-      host.innerHTML = "";
+      host.innerHTML = `<div class="split-no-cands">No mapped landmarks along this section — use the bar or type a mileage.</div>`;
     } else {
       host.innerHTML = cands
         .map((c, i) => {
@@ -4234,6 +4236,17 @@
         })
         .join("");
     }
+    // End labels on the scrub track.
+    $("split-scrub-start").textContent = seg.from;
+    $("split-scrub-end").textContent = seg.to;
+    // Landmark ticks on the bar so you can aim for one when tapping.
+    const ticks = $("split-scrub-ticks");
+    ticks.innerHTML = cands
+      .map((c) => {
+        const pct = seg.miles > 0 ? (c.atMi / seg.miles) * 100 : 0;
+        return `<div class="tick" style="left:${pct}%"></div>`;
+      })
+      .join("");
     // Prefill custom miles only when the existing split isn't one of the
     // listed landmarks (a free mile point).
     const isListed = existing && cands.some((c) => c.label === existing.label && c.atMi === existing.atMi);
@@ -4241,8 +4254,48 @@
     $("split-date").value = (existing && existing.date) || todayISO();
     $("split-date").max = todayISO();
     $("split-clear").style.display = existing ? "" : "none";
+    // Open the "more precise" disclosure only when there's an existing
+    // custom mileage to show; otherwise keep the bar front and center.
+    const moreEl = document.querySelector(".split-more");
+    if (moreEl) moreEl.open = !!(existing && !isListed);
     updateSplitPreview();
     $("split-modal").classList.add("show");
+  }
+  // Tap/drag along the bar → choose a stop point. Snaps to a nearby
+  // landmark when the tap lands close to one (so it's easy to "stop at
+  // the shelter"), otherwise records a free mile point.
+  function applySplitFraction(frac) {
+    const seg = segIndex.get(splitModalSegId);
+    if (!seg) return;
+    const f = Math.max(0, Math.min(1, frac));
+    let mi = f * seg.miles;
+    // Keep it a real partial (never exactly 0 or the whole thing).
+    const inset = Math.min(0.1, seg.miles * 0.02);
+    mi = Math.max(inset, Math.min(seg.miles - inset, mi));
+    // Snap to a landmark within ~0.3 mi of the tap.
+    let snap = null;
+    let bestD = 0.3;
+    for (const c of splitCands) {
+      const d = Math.abs(c.atMi - mi);
+      if (d < bestD) { bestD = d; snap = c; }
+    }
+    const radios = document.querySelectorAll('#split-candidates input[name="split-pt"]');
+    if (snap) {
+      $("split-custom-mi").value = "";
+      radios.forEach((r) => {
+        r.checked = r.dataset.label === snap.label && Number(r.value) === snap.atMi;
+      });
+    } else {
+      radios.forEach((r) => { r.checked = false; });
+      $("split-custom-mi").value = (Math.round(mi * 10) / 10).toFixed(1);
+    }
+    updateSplitPreview();
+  }
+  function scrubFractionFromEvent(e) {
+    const el = $("split-scrub");
+    const rect = el.getBoundingClientRect();
+    const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+    return rect.width > 0 ? x / rect.width : 0;
   }
   // The miles currently chosen in the modal (custom field wins over a
   // selected landmark), or null if nothing valid is chosen yet.
@@ -4265,17 +4318,22 @@
     const seg = segIndex.get(splitModalSegId);
     const bar = $("split-preview-done");
     const cap = $("split-preview-cap");
+    const handle = $("split-scrub-handle");
+    const scrub = $("split-scrub");
     if (!seg || !bar || !cap) return;
     const mi = currentSplitMi();
-    if (mi === null || mi <= 0) {
-      bar.style.width = "0%";
-      cap.textContent = `0.0 mi hiked · ${seg.miles.toFixed(1)} mi left`;
-      return;
-    }
-    const done = Math.max(0, Math.min(seg.miles, mi));
+    const done = mi === null || mi <= 0 ? 0 : Math.max(0, Math.min(seg.miles, mi));
     const pct = seg.miles > 0 ? (done / seg.miles) * 100 : 0;
     bar.style.width = `${pct}%`;
-    cap.textContent = `${done.toFixed(1)} mi hiked · ${(seg.miles - done).toFixed(1)} mi left`;
+    if (handle) handle.style.left = `${pct}%`;
+    if (scrub) {
+      scrub.setAttribute("aria-valuemax", String(seg.miles.toFixed(1)));
+      scrub.setAttribute("aria-valuenow", String(done.toFixed(1)));
+      scrub.setAttribute("aria-valuetext", `${done.toFixed(1)} of ${seg.miles.toFixed(1)} miles`);
+    }
+    cap.textContent = done <= 0
+      ? `Tap the bar where you turned back — ${seg.miles.toFixed(1)} mi total`
+      : `${done.toFixed(1)} mi hiked · ${(seg.miles - done).toFixed(1)} mi left`;
   }
   function saveSplitFromModal() {
     const id = splitModalSegId;
@@ -5363,6 +5421,43 @@
       if (e.target && e.target.name === "split-pt") $("split-custom-mi").value = "";
       updateSplitPreview();
     });
+    // Tap / drag along the bar to mark where you stopped.
+    const scrub = $("split-scrub");
+    if (scrub) {
+      let dragging = false;
+      const onMove = (e) => {
+        if (!dragging) return;
+        e.preventDefault();
+        applySplitFraction(scrubFractionFromEvent(e));
+      };
+      scrub.addEventListener("pointerdown", (e) => {
+        dragging = true;
+        try { scrub.setPointerCapture(e.pointerId); } catch (_) {}
+        applySplitFraction(scrubFractionFromEvent(e));
+      });
+      scrub.addEventListener("pointermove", onMove);
+      const end = (e) => {
+        if (!dragging) return;
+        dragging = false;
+        try { scrub.releasePointerCapture(e.pointerId); } catch (_) {}
+      };
+      scrub.addEventListener("pointerup", end);
+      scrub.addEventListener("pointercancel", end);
+      // Keyboard: arrows nudge by 0.1 mi, Home/End jump to the ends.
+      scrub.addEventListener("keydown", (e) => {
+        const seg = segIndex.get(splitModalSegId);
+        if (!seg) return;
+        const cur = currentSplitMi() || 0;
+        let next = null;
+        if (e.key === "ArrowRight" || e.key === "ArrowUp") next = cur + 0.1;
+        else if (e.key === "ArrowLeft" || e.key === "ArrowDown") next = cur - 0.1;
+        else if (e.key === "Home") next = 0;
+        else if (e.key === "End") next = seg.miles;
+        if (next === null) return;
+        e.preventDefault();
+        applySplitFraction(seg.miles > 0 ? next / seg.miles : 0);
+      });
+    }
     $("load-file").addEventListener("change", (e) => {
       const f = e.target.files[0];
       if (f) loadBackupFile(f);
