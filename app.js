@@ -4241,7 +4241,41 @@
     $("split-date").value = (existing && existing.date) || todayISO();
     $("split-date").max = todayISO();
     $("split-clear").style.display = existing ? "" : "none";
+    updateSplitPreview();
     $("split-modal").classList.add("show");
+  }
+  // The miles currently chosen in the modal (custom field wins over a
+  // selected landmark), or null if nothing valid is chosen yet.
+  function currentSplitMi() {
+    const customRaw = $("split-custom-mi").value.trim();
+    if (customRaw !== "") {
+      const n = Number(customRaw);
+      return Number.isFinite(n) ? n : null;
+    }
+    const radio = document.querySelector('#split-candidates input[name="split-pt"]:checked');
+    if (radio) {
+      const n = Number(radio.value);
+      return Number.isFinite(n) ? n : null;
+    }
+    return null;
+  }
+  // Live proportion bar: hiked portion in the trail's hiked color, the
+  // rest in the darker unhiked color — mirrors how the map renders it.
+  function updateSplitPreview() {
+    const seg = segIndex.get(splitModalSegId);
+    const bar = $("split-preview-done");
+    const cap = $("split-preview-cap");
+    if (!seg || !bar || !cap) return;
+    const mi = currentSplitMi();
+    if (mi === null || mi <= 0) {
+      bar.style.width = "0%";
+      cap.textContent = `0.0 mi hiked · ${seg.miles.toFixed(1)} mi left`;
+      return;
+    }
+    const done = Math.max(0, Math.min(seg.miles, mi));
+    const pct = seg.miles > 0 ? (done / seg.miles) * 100 : 0;
+    bar.style.width = `${pct}%`;
+    cap.textContent = `${done.toFixed(1)} mi hiked · ${(seg.miles - done).toFixed(1)} mi left`;
   }
   function saveSplitFromModal() {
     const id = splitModalSegId;
@@ -5322,10 +5356,12 @@
     $("split-custom-mi")?.addEventListener("input", () => {
       const r = document.querySelector('#split-candidates input[name="split-pt"]:checked');
       if (r && $("split-custom-mi").value.trim() !== "") r.checked = false;
+      updateSplitPreview();
     });
     // Picking a landmark clears the custom mileage field.
     $("split-candidates")?.addEventListener("change", (e) => {
       if (e.target && e.target.name === "split-pt") $("split-custom-mi").value = "";
+      updateSplitPreview();
     });
     $("load-file").addEventListener("change", (e) => {
       const f = e.target.files[0];
