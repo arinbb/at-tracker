@@ -3187,7 +3187,24 @@
     const summary = `<div class="iti-summary">${hikeDays} hike day${hikeDays === 1 ? "" : "s"}` +
       (zeroDays > 0 ? ` + ${zeroDays} zero day${zeroDays === 1 ? "" : "s"} = ${totalDays} total` : "") +
       `</div>`;
-    return summary + rows.join("");
+    // Warning banner when any single day is significantly over the user's
+    // pace (>1.75x). This basically only happens when an override forces
+    // a long day or shelter-only mode has to bridge a multi-day gap. Tell
+    // the user what's going on and how to undo.
+    const longDays = itinerary.filter((d) => d.kind === "hike" && d.miles > pace * 1.75);
+    let warning = "";
+    if (longDays.length > 0) {
+      const culprits = longDays.map((d) => `${d.miles.toFixed(1)} mi to <strong>${escapeHtml(d.to)}</strong>`).join("; ");
+      const hasOverrides = !!(t && Array.isArray(t.dayOverrides) && t.dayOverrides.length > 0);
+      const shelterOnlyHint = !!(t && t.shelterOnly && !hasOverrides);
+      const detail = hasOverrides
+        ? "This is from an earlier [▶] click forcing a far-away shelter as the day-end. Click <strong>Reset day overrides</strong> above to clear, or use [◀] on that row to pull back."
+        : shelterOnlyHint
+        ? "Shelters along this stretch are far apart, and <em>End days at shelters only</em> is on. Turn it off to let the day end at a road or landmark closer to your pace."
+        : "The trail has a long stretch with no good day-end here. Use [◀] to pull back to an earlier stop.";
+      warning = `<div class="iti-warning">⚠ <strong>${longDays.length}</strong> day${longDays.length === 1 ? "" : "s"} exceed${longDays.length === 1 ? "s" : ""} 1.75× your ${pace}-mi pace: ${culprits}. ${detail}</div>`;
+    }
+    return warning + summary + rows.join("");
   }
   // Print just the planned modal: temporarily set a body class that the
   // CSS uses to hide everything else, fire window.print(), restore.
