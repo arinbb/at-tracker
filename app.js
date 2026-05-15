@@ -4865,7 +4865,15 @@
     populatePackFormSelects();
     $("pack-btn")?.addEventListener("click", renderPack);
     $("pack-close")?.addEventListener("click", () => $("pack-modal").classList.remove("show"));
-    $("pack-add-submit")?.addEventListener("click", packAddSubmit);
+    // Use the form's submit event (covers both the button click and Enter
+    // in any input). Previously the form had an inline onsubmit that
+    // re-clicked the submit button, which caused packAddSubmit to fire
+    // twice — the second pass saw the just-cleared name field and alerted
+    // "Please enter a name" on every successful add.
+    $("pack-add-form")?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      packAddSubmit();
+    });
     $("pack-add-cancel-edit")?.addEventListener("click", packCancelEdit);
     $("pack-body")?.addEventListener("click", onPackBodyClick);
     $("pack-share-btn")?.addEventListener("click", openSharePack);
