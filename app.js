@@ -1880,15 +1880,35 @@
     const lb = oz / 16;
     return lb < 10 ? lb.toFixed(2) : lb.toFixed(1);
   }
+  // Helpers for the two new per-item fields. Default qty=1 and packed=true
+  // when missing so pre-existing items behave unchanged with no migration.
+  function packItemQty(it) {
+    const q = Number(it && it.quantity);
+    return Number.isFinite(q) && q > 0 ? Math.floor(q) : 1;
+  }
+  function packItemPacked(it) {
+    // Treat missing as packed=true (the historic implicit state).
+    return it && it.packed !== false;
+  }
   function computePackTotals(items) {
+    // Only packed items contribute to weight totals. quantity multiplies
+    // each item's weight (3 pairs of socks at 8 oz/pair = 24 oz).
     let base = 0, worn = 0, consumable = 0;
+    let setAside = 0;
+    let setAsideCount = 0;
     for (const it of items) {
-      const w = Number(it.weight_oz) || 0;
+      const wPer = Number(it.weight_oz) || 0;
+      const w = wPer * packItemQty(it);
+      if (!packItemPacked(it)) {
+        setAside += w;
+        setAsideCount++;
+        continue;
+      }
       if (it.consumable) consumable += w;
       else if (it.worn) worn += w;
       else base += w;
     }
-    return { base, worn, consumable, total: base + worn + consumable };
+    return { base, worn, consumable, total: base + worn + consumable, setAside, setAsideCount };
   }
   function newPackItemId() {
     // Simple monotonic id from current time + random nibble. Collision-resistant
@@ -1899,7 +1919,7 @@
     const items = pack.items;
     const totals = computePackTotals(items);
     const needsReplacing = items.filter(
-      (i) => i.condition === "replace_soon" || i.condition === "replace_now"
+      (i) => packItemPacked(i) && (i.condition === "replace_soon" || i.condition === "replace_now")
     );
     const html = [];
     // Totals strip
@@ -1909,6 +1929,11 @@
     html.push(`<div><span class="lbl">Consumables</span><span class="val">${ozToLb(totals.consumable)} lb<small> · ${totals.consumable.toFixed(1)} oz</small></span></div>`);
     html.push(`<div class="pack-total-final"><span class="lbl">Total</span><span class="val">${ozToLb(totals.total)} lb<small> · ${totals.total.toFixed(1)} oz</small></span></div>`);
     html.push(`</div>`);
+    // Set-aside summary: stuff in the loadout that the user explicitly
+    // unpacked for this trip. Lives in the same list, just dimmed.
+    if (totals.setAsideCount > 0) {
+      html.push(`<div class="pack-setaside-note"><strong>${totals.setAsideCount}</strong> item${totals.setAsideCount === 1 ? "" : "s"} set aside · ${ozToLb(totals.setAside)} lb not packed</div>`);
+    }
     if (needsReplacing.length > 0) {
       html.push(`<div class="pack-warn">⚠ <strong>${needsReplacing.length}</strong> item${needsReplacing.length === 1 ? "" : "s"} need replacing: ${needsReplacing.map((i) => escapeHtml(i.name)).slice(0, 3).join(", ")}${needsReplacing.length > 3 ? "…" : ""}</div>`);
     }
@@ -1925,19 +1950,39 @@
       for (const cat of PACK_CATEGORIES) {
         const cIts = byCat.get(cat.id);
         if (!cIts || cIts.length === 0) continue;
-        const catTotal = cIts.reduce((a, i) => a + (Number(i.weight_oz) || 0), 0);
+        // Category total counts only packed items so the header reflects
+        // what you're actually carrying.
+        const catTotal = cIts.reduce(
+          (a, i) => a + (packItemPacked(i) ? (Number(i.weight_oz) || 0) * packItemQty(i) : 0),
+          0
+        );
+        const catPackedCount = cIts.filter(packItemPacked).length;
         html.push(`<section class="pack-cat">`);
-        html.push(`<header class="pack-cat-header"><span>${escapeHtml(cat.label)}</span><span class="pack-cat-stats">${cIts.length} item${cIts.length === 1 ? "" : "s"} · ${ozToLb(catTotal)} lb</span></header>`);
+        html.push(`<header class="pack-cat-header"><span>${escapeHtml(cat.label)}</span><span class="pack-cat-stats">${catPackedCount}/${cIts.length} item${cIts.length === 1 ? "" : "s"} · ${ozToLb(catTotal)} lb</span></header>`);
         for (const it of cIts) {
           const cond = packCondInfo(it.condition || "good");
+          const qty = packItemQty(it);
+          const isPacked = packItemPacked(it);
           const flags = [];
           if (it.worn) flags.push("worn");
           if (it.consumable) flags.push("consumable");
-          html.push(`<div class="pack-item" data-pack-id="${escapeHtml(it.id)}">`);
-          html.push(`<div class="pack-item-name">${escapeHtml(it.name || "(unnamed)")}${flags.length ? ` <small class="pack-flags">[${flags.join(", ")}]</small>` : ""}</div>`);
-          html.push(`<div class="pack-item-weight">${(Number(it.weight_oz) || 0).toFixed(1)} oz</div>`);
+          // Per-row weight is per-unit × qty; show both so it's obvious
+          // why the totals jumped after bumping qty.
+          const perUnitOz = Number(it.weight_oz) || 0;
+          const rowOz = perUnitOz * qty;
+          const weightDisplay = qty > 1
+            ? `${rowOz.toFixed(1)} oz<small> · ${perUnitOz.toFixed(1)} × ${qty}</small>`
+            : `${rowOz.toFixed(1)} oz`;
+          html.push(`<div class="pack-item${isPacked ? "" : " pack-item-unpacked"}" data-pack-id="${escapeHtml(it.id)}">`);
+          const qtySuffix = qty > 1 ? ` <small class="pack-qty">× ${qty}</small>` : "";
+          html.push(`<div class="pack-item-name">${escapeHtml(it.name || "(unnamed)")}${qtySuffix}${flags.length ? ` <small class="pack-flags">[${flags.join(", ")}]</small>` : ""}</div>`);
+          html.push(`<div class="pack-item-weight">${weightDisplay}</div>`);
           html.push(`<div class="pack-item-cond" style="color:${cond.color};" title="${escapeHtml(cond.label)}">${cond.icon} ${escapeHtml(cond.label)}</div>`);
           html.push(`<div class="pack-item-actions">`);
+          // Pack/unpack toggle button. Filled backpack = in pack, outlined =
+          // set aside. Distinct from edit/delete so it doesn't get confused.
+          const packTitle = isPacked ? "Set this item aside (still in loadout, not counted)" : "Add this item back to the pack";
+          html.push(`<button class="pack-toggle-btn${isPacked ? " on" : ""}" data-pack-toggle="${escapeHtml(it.id)}" title="${packTitle}" aria-pressed="${isPacked}" aria-label="${packTitle}">${isPacked ? "🎒" : "○"}</button>`);
           html.push(`<button class="pack-edit-btn" data-pack-edit="${escapeHtml(it.id)}" title="Edit item" aria-label="Edit item">✎</button>`);
           html.push(`<button class="pack-del-btn" data-pack-delete="${escapeHtml(it.id)}" title="Delete item" aria-label="Delete item">✕</button>`);
           html.push(`</div>`);
@@ -1961,12 +2006,16 @@
     if (nameEl) nameEl.value = "";
     const wEl = $("pack-add-weight");
     if (wEl) wEl.value = "";
+    const qEl = $("pack-add-qty");
+    if (qEl) qEl.value = "1";
     const notesEl = $("pack-add-notes");
     if (notesEl) notesEl.value = "";
     const wornEl = $("pack-add-worn");
     if (wornEl) wornEl.checked = false;
     const consEl = $("pack-add-consumable");
     if (consEl) consEl.checked = false;
+    const packedEl = $("pack-add-packed");
+    if (packedEl) packedEl.checked = true;
     // Cat + cond stay on whatever the user picked last; that's usually
     // helpful when adding a string of similar items.
     const editIdEl = $("pack-add-edit-id");
@@ -1983,10 +2032,13 @@
       return;
     }
     const weight_oz = Math.max(0, parseFloat($("pack-add-weight").value) || 0);
+    const qtyRaw = parseInt($("pack-add-qty")?.value, 10);
+    const quantity = Number.isFinite(qtyRaw) && qtyRaw > 0 ? qtyRaw : 1;
     const category = $("pack-add-category").value;
     const condition = $("pack-add-condition").value;
     const worn = $("pack-add-worn").checked;
     const consumable = $("pack-add-consumable").checked;
+    const packed = $("pack-add-packed") ? $("pack-add-packed").checked : true;
     const notes = $("pack-add-notes").value.trim();
     const editId = $("pack-add-edit-id").value;
     if (editId) {
@@ -1996,7 +2048,7 @@
         pack = {
           ...pack,
           items: pack.items.map((i) => i.id === editId
-            ? { ...i, name, weight_oz, category, condition, worn, consumable, notes }
+            ? { ...i, name, weight_oz, quantity, category, condition, worn, consumable, packed, notes }
             : i),
         };
       }
@@ -2005,7 +2057,7 @@
         ...pack,
         items: [...pack.items, {
           id: newPackItemId(),
-          name, weight_oz, category, condition, worn, consumable, notes,
+          name, weight_oz, quantity, category, condition, worn, consumable, packed, notes,
         }],
       };
     }
@@ -2017,10 +2069,12 @@
     if (!it) return;
     $("pack-add-name").value = it.name || "";
     $("pack-add-weight").value = it.weight_oz != null ? String(it.weight_oz) : "";
+    if ($("pack-add-qty")) $("pack-add-qty").value = String(packItemQty(it));
     $("pack-add-category").value = it.category || "misc";
     $("pack-add-condition").value = it.condition || "good";
     $("pack-add-worn").checked = !!it.worn;
     $("pack-add-consumable").checked = !!it.consumable;
+    if ($("pack-add-packed")) $("pack-add-packed").checked = packItemPacked(it);
     $("pack-add-notes").value = it.notes || "";
     $("pack-add-edit-id").value = it.id;
     $("pack-add-submit").textContent = "Save changes";
@@ -2045,6 +2099,25 @@
     if (editBtn) { e.preventDefault(); packBeginEdit(editBtn.dataset.packEdit); return; }
     const delBtn = e.target.closest("[data-pack-delete]");
     if (delBtn) { e.preventDefault(); packDelete(delBtn.dataset.packDelete); return; }
+    // Pack / set-aside toggle: flips item.packed without touching anything
+    // else. Lets a user keep "winter shell" in their loadout but exclude
+    // it from this trip's totals without re-creating the item later.
+    const tglBtn = e.target.closest("[data-pack-toggle]");
+    if (tglBtn) {
+      e.preventDefault();
+      const id = tglBtn.dataset.packToggle;
+      const it = pack.items.find((x) => x.id === id);
+      if (!it) return;
+      pack = {
+        ...pack,
+        items: pack.items.map((i) =>
+          i.id === id ? { ...i, packed: !packItemPacked(i) } : i
+        ),
+      };
+      savePack();
+      renderPack();
+      return;
+    }
   }
   // ---- Pack share / import ----
   // Encode the entire pack (items array, including names + notes) into a
