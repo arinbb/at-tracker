@@ -722,6 +722,12 @@
         from: s.to,
         to: s.from,
         geom: Array.isArray(s.geom) ? [...s.geom].slice().reverse() : s.geom,
+        // Walking the section the other way turns its ascents into
+        // descents and vice-versa, so gain/loss swap. Every consumer
+        // (summary totals, per-day itinerary, difficulty chart, share
+        // text) reads these off the seg, so this fixes them all.
+        elev_gain: s.elev_loss,
+        elev_loss: s.elev_gain,
       }));
   }
   function ensureActiveTrip() {
