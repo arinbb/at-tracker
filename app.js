@@ -2987,20 +2987,29 @@
     {
       const t = getActiveTrip();
       html.push(`<div class="trip-control">`);
-      html.push(`<label>Trip: <select id="trip-select" title="Choose a saved planned trip">`);
+      // Trip switcher as a row of chips so the one you're viewing is
+      // obvious at a glance (active = filled accent), not buried in a
+      // dropdown. Click a chip to switch.
+      html.push(`<div class="trip-chips" role="tablist" aria-label="Planned trips">`);
       if (trips.length === 0) {
-        html.push(`<option value="">(none)</option>`);
+        html.push(`<span class="trip-chips-empty">No saved trips yet — your current planned sections are unsaved.</span>`);
       } else {
         for (const tt of trips) {
-          html.push(`<option value="${escapeHtml(tt.id)}"${tt.id === activeTripId ? " selected" : ""}>${escapeHtml(tt.name)} · ${tt.segs.length} sec</option>`);
+          const on = tt.id === activeTripId;
+          html.push(`<button class="trip-chip${on ? " active" : ""}" data-trip-id="${escapeHtml(tt.id)}" role="tab" aria-selected="${on}" title="${on ? "Currently viewing this trip" : "Switch to this trip"}">` +
+            `${on ? `<span class="trip-chip-dot" aria-hidden="true">●</span>` : ""}` +
+            `<span class="trip-chip-name">${escapeHtml(tt.name)}</span>` +
+            `<span class="trip-chip-n">${tt.segs.length} sec</span></button>`);
         }
       }
-      html.push(`</select></label>`);
+      html.push(`</div>`);
+      html.push(`<div class="trip-actions">`);
       html.push(`<button id="trip-new" title="Save current planned set as a new trip">+ New</button>`);
       if (t) {
-        html.push(`<button id="trip-rename" title="Rename current trip">✎</button>`);
-        html.push(`<button id="trip-delete" title="Delete current trip">✕</button>`);
+        html.push(`<button id="trip-rename" title="Rename current trip">✎ Rename</button>`);
+        html.push(`<button id="trip-delete" title="Delete current trip">✕ Delete</button>`);
       }
+      html.push(`</div>`);
       const dir = tripDirection();
       html.push(`<label class="trip-dir-wrap" title="Which way you're hiking this trip — overrides the app default for the plan, itinerary, and printout">Direction: <select id="trip-dir">` +
         `<option value="nobo"${dir === "nobo" ? " selected" : ""}>Northbound ↑ (GA → ME)</option>` +
@@ -3155,14 +3164,29 @@
         html.push(`<div style="font-size: 12px; color: var(--muted);">Elevation gain/loss not yet available — rebuild data with elevation enabled to add it.</div>`);
       }
     }
-    $("planned-profile-name").textContent = activeProfile;
+    // Prominent header so it's always clear which trip you're viewing.
+    const _activeT = getActiveTrip();
+    const _tn = $("planned-trip-name");
+    if (_tn) _tn.textContent = _activeT ? _activeT.name : (trips.length ? "(no trip selected)" : "Plan a hike");
+    const _sub = $("planned-subtitle");
+    if (_sub) {
+      const bits = [escapeHtml(activeProfile)];
+      if (plannedSegs.length) bits.push(`${plannedSegs.length} section${plannedSegs.length === 1 ? "" : "s"} · ${totalMi.toFixed(1)} mi`);
+      if (trips.length > 1) bits.push(`${trips.length} trips saved`);
+      _sub.innerHTML = `<span id="planned-profile-name"></span>${bits.slice(1).map((b) => ` · ${b}`).join("")}`;
+      const pn = $("planned-profile-name");
+      if (pn) pn.textContent = activeProfile;
+    }
     $("planned-body").innerHTML = html.join("");
     $("planned-modal").classList.add("show");
 
-    // Wire trip selector + actions (newly rendered)
-    $("trip-select")?.addEventListener("change", (e) => {
-      switchTrip(e.target.value);
-      renderPlannedSummary();
+    // Wire trip switcher chips + actions (newly rendered)
+    $("planned-body").querySelectorAll(".trip-chip[data-trip-id]").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        if (chip.classList.contains("active")) return;
+        switchTrip(chip.dataset.tripId);
+        renderPlannedSummary();
+      });
     });
     $("trip-dir")?.addEventListener("change", (e) => {
       const t = ensureActiveTrip();
