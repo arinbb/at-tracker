@@ -1757,7 +1757,7 @@
       <h3>Add / edit item</h3>
       <input type="hidden" id="pack-add-edit-id" />
       <div class="pack-form-grid">
-        <label>Name<input type="text" id="pack-add-name" placeholder="e.g. Osprey Atmos 65" maxlength="80" /></label>
+        <label class="pack-name-field">Name<input type="text" id="pack-add-name" placeholder="e.g. Osprey Atmos 65" maxlength="80" /></label>
         <label>Weight per unit (oz)<input type="number" id="pack-add-weight" min="0" step="0.1" placeholder="0.0" /></label>
         <label>Qty<input type="number" id="pack-add-qty" min="1" step="1" value="1" title="How many of this item — useful for socks, shirts, etc." /></label>
         <label>Category<select id="pack-add-category"></select></label>
@@ -1968,16 +1968,23 @@
   .pack-add-form h3 { font-size: 13px; margin: 0 0 8px 0; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
   .pack-form-grid {
     display: grid;
-    grid-template-columns: 2fr 1fr 0.6fr 1.3fr 1.3fr;
+    /* Name gets its own full-width row; the rest share row two. */
+    grid-template-columns: 1.1fr 0.6fr 1.2fr 1.2fr;
     gap: 6px 8px;
     margin-bottom: 8px;
   }
-  .pack-form-grid label, .pack-notes-row { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+  .pack-form-grid .pack-name-field { grid-column: 1 / -1; }
+  /* min-width:0 lets the <select> columns shrink to their track instead
+     of being forced wide by long option text (which overflowed the
+     modal and squeezed the Name field). */
+  .pack-form-grid label, .pack-notes-row { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); min-width: 0; }
   .pack-form-grid input, .pack-form-grid select, .pack-notes-row textarea {
     font: inherit; font-size: 13px; padding: 5px 8px;
     border: 1px solid var(--rule); border-radius: 4px;
     background: var(--input-bg); color: var(--ink);
+    width: 100%; min-width: 0; box-sizing: border-box;
   }
+  .pack-form-grid select { text-overflow: ellipsis; }
   .pack-notes-row textarea { resize: vertical; min-height: 36px; }
   .pack-form-flags { display: flex; flex-direction: column; gap: 2px; font-size: 12px; margin-bottom: 8px; }
   .pack-form-flags label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
@@ -2024,6 +2031,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=69"></script>
+<script src="app.js?v=70"></script>
 </body>
 </html>
