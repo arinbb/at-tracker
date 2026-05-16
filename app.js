@@ -3384,13 +3384,16 @@
         const it = buildItinerary(plannedSegs, pace, startDate, zeroFreq, _pins, t.dayOverrides, _shelt);
         const day = it[dayIdx];
         if (!day || day.kind !== "hike") return;
-        // Compute mile position of each shelter in trail order, then mile
-        // position where the current day ends, then find adjacent shelter.
+        // Candidate stop points in trail order: shelters/campsites (both
+        // are kind "shelter") AND road crossings — anywhere you could
+        // realistically end a day. Then find the adjacent one to the
+        // current day end.
         const shelters = [];
         let cum = 0;
         for (const s of plannedSegs) {
           cum += s.miles;
-          if (breakpointKind(s.to).kind === "shelter") {
+          const k = breakpointKind(s.to).kind;
+          if (k === "shelter" || k === "road") {
             shelters.push({ name: s.to, mi: cum });
           }
         }
@@ -3754,15 +3757,18 @@
     const dayOverrides = t && Array.isArray(t.dayOverrides) ? t.dayOverrides : [];
     const shelterOnly = !!(t && t.shelterOnly);
     const itinerary = buildItinerary(plannedSegs, pace, startISO, zeroFreq, pins, dayOverrides, shelterOnly);
-    // Pre-compute the trail-mile position of each shelter-kind segment
-    // endpoint in the planned route. The [◀]/[▶] buttons consult this
-    // to know which adjacent shelter to push or pull a day to.
+    // Pre-compute the trail-mile position of each candidate stop in the
+    // planned route — shelters/campsites (kind "shelter") and road
+    // crossings (kind "road"). The [◀]/[▶] buttons consult this to know
+    // which adjacent stop to push or pull a day to; it must match the
+    // click handler's candidate set so a button's enabled state is honest.
     const shelterPositions = [];
     {
       let cum = 0;
       for (const s of plannedSegs) {
         cum += s.miles;
-        if (breakpointKind(s.to).kind === "shelter") {
+        const k = breakpointKind(s.to).kind;
+        if (k === "shelter" || k === "road") {
           shelterPositions.push({ name: s.to, mi: cum });
         }
       }
@@ -3804,8 +3810,8 @@
           `<div class="iti-row${isPinned ? " iti-pinned" : ""}${isOverridden ? " iti-overridden" : ""}"><span class="iti-day">${dayOfWeek(d.date)}</span>` +
           `<span class="iti-date">${escapeHtml(d.date)}</span>` +
           `<span class="iti-text">Day ${hikeNum}: <strong>${escapeHtml(d.from)}</strong> → <strong>${d.toIcon} ${escapeHtml(d.to)}</strong> ` +
-            `<button class="iti-shift" data-day-shift="back" data-day-idx="${dIdx}" title="Pull this day's endpoint back to the previous shelter" aria-label="Shorter day"${shorterEnabled ? "" : " disabled"}>◀</button>` +
-            `<button class="iti-shift" data-day-shift="forward" data-day-idx="${dIdx}" title="Push this day's endpoint forward to the next shelter" aria-label="Longer day"${furtherEnabled ? "" : " disabled"}>▶</button>` +
+            `<button class="iti-shift" data-day-shift="back" data-day-idx="${dIdx}" title="Pull this day's endpoint back to the previous stop (shelter, campsite, or road crossing)" aria-label="Shorter day"${shorterEnabled ? "" : " disabled"}>◀</button>` +
+            `<button class="iti-shift" data-day-shift="forward" data-day-idx="${dIdx}" title="Push this day's endpoint forward to the next stop (shelter, campsite, or road crossing)" aria-label="Longer day"${furtherEnabled ? "" : " disabled"}>▶</button>` +
             `<button class="iti-pin${isPinned ? " on" : ""}" data-pin-stop="${escapeHtml(d.to)}" title="${pinTitle}" aria-label="${pinTitle}" aria-pressed="${isPinned}">📌</button>` +
           `</span>` +
           `<span class="iti-stats">${d.miles.toFixed(1)} mi · ${cumMi.toFixed(1)} cum · +${Math.round(d.gain)}/−${Math.round(d.loss)} ft ${difficultyBadgeHTML(dayFtPerMi, { compact: true })}</span>` +
