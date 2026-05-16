@@ -2032,15 +2032,15 @@
   // base (carried, non-consumable, non-worn) from worn-on-body and from
   // consumables that vary trip-to-trip.
   const PACK_CATEGORIES = [
-    { id: "pack",      label: "Pack" },
-    { id: "shelter",   label: "Shelter" },
-    { id: "sleep",     label: "Sleep system" },
-    { id: "kitchen",   label: "Kitchen" },
-    { id: "clothing",  label: "Clothing" },
-    { id: "hygiene",   label: "Hygiene & first aid" },
-    { id: "electronics", label: "Electronics" },
-    { id: "consumables", label: "Food / fuel / water" },
-    { id: "misc",      label: "Misc" },
+    { id: "pack",      label: "Pack",                 icon: "🎒", color: "#8b5cf6" },
+    { id: "shelter",   label: "Shelter",              icon: "⛺", color: "#2a7d3a" },
+    { id: "sleep",     label: "Sleep system",         icon: "🛌", color: "#1a5fb4" },
+    { id: "kitchen",   label: "Kitchen",              icon: "🍳", color: "#d97a2f" },
+    { id: "clothing",  label: "Clothing",             icon: "👕", color: "#c0399b" },
+    { id: "hygiene",   label: "Hygiene & first aid",  icon: "🧼", color: "#14a0a0" },
+    { id: "electronics", label: "Electronics",        icon: "🔋", color: "#5b6b7b" },
+    { id: "consumables", label: "Food / fuel / water", icon: "🍎", color: "#d4a017" },
+    { id: "misc",      label: "Misc",                 icon: "📦", color: "#9a9a9a" },
   ];
   const PACK_CONDITIONS = [
     { id: "new",          label: "New",            color: "#2a7d3a", icon: "●" },
@@ -2052,9 +2052,66 @@
   function packCondInfo(id) {
     return PACK_CONDITIONS.find((c) => c.id === id) || PACK_CONDITIONS[1];
   }
+  function packCategory(id) {
+    return PACK_CATEGORIES.find((x) => x.id === id) || PACK_CATEGORIES[PACK_CATEGORIES.length - 1];
+  }
   function packCategoryLabel(id) {
     const c = PACK_CATEGORIES.find((x) => x.id === id);
     return c ? c.label : "Misc";
+  }
+  function packCategoryIcon(id) {
+    return packCategory(id).icon;
+  }
+  // Packed weight (oz) per category, in PACK_CATEGORIES order, omitting
+  // empty categories. Drives the breakdown donut + legend.
+  function packCategoryBreakdown(items) {
+    const sums = new Map();
+    for (const it of items) {
+      if (!packItemPacked(it)) continue;
+      const k = it.category || "misc";
+      const w = (Number(it.weight_oz) || 0) * packItemQty(it);
+      sums.set(k, (sums.get(k) || 0) + w);
+    }
+    const rows = [];
+    for (const cat of PACK_CATEGORIES) {
+      const oz = sums.get(cat.id) || 0;
+      if (oz > 0) rows.push({ id: cat.id, label: cat.label, icon: cat.icon, color: cat.color, oz });
+    }
+    return rows;
+  }
+  // Inline SVG donut from the category breakdown. Each arc length is the
+  // category's share of total packed weight (r chosen so circumference
+  // ≈ 100, letting us use percentages directly as dash lengths).
+  function packBreakdownChartHTML(rows) {
+    const total = rows.reduce((a, r) => a + r.oz, 0);
+    if (total <= 0) return "";
+    const R = 15.915;
+    let offset = 25; // start at 12 o'clock
+    const segs = rows
+      .map((r) => {
+        const pct = (r.oz / total) * 100;
+        const dash = `${pct.toFixed(3)} ${(100 - pct).toFixed(3)}`;
+        const circle = `<circle class="pack-donut-seg" r="${R}" cx="21" cy="21" fill="transparent" stroke="${r.color}" stroke-width="8" stroke-dasharray="${dash}" stroke-dashoffset="${offset.toFixed(3)}"><title>${escapeHtml(r.label)} — ${ozToLb(r.oz)} lb (${pct.toFixed(0)}%)</title></circle>`;
+        // Next segment starts where this one ended (dashoffset runs backwards).
+        offset = (offset - pct + 100) % 100;
+        return circle;
+      })
+      .join("");
+    const legend = rows
+      .map((r) => {
+        const pct = (r.oz / total) * 100;
+        return `<li><span class="pack-leg-sw" style="background:${r.color}"></span>` +
+          `<span class="pack-leg-ic">${r.icon}</span>` +
+          `<span class="pack-leg-name">${escapeHtml(r.label)}</span>` +
+          `<span class="pack-leg-val">${ozToLb(r.oz)} lb<small> · ${pct.toFixed(0)}%</small></span></li>`;
+      })
+      .join("");
+    return `<div class="pack-breakdown">` +
+      `<svg class="pack-donut" viewBox="0 0 42 42" role="img" aria-label="Packed weight by category">` +
+      `<circle r="${R}" cx="21" cy="21" fill="transparent" stroke="var(--rule)" stroke-width="8"></circle>` +
+      `${segs}</svg>` +
+      `<ul class="pack-legend">${legend}</ul>` +
+      `</div>`;
   }
   function ozToLb(oz) {
     const lb = oz / 16;
@@ -2120,6 +2177,9 @@
     if (items.length === 0) {
       html.push(`<p class="pack-empty">Your pack is empty. Add an item below to get started.</p>`);
     } else {
+      // Weight-by-category donut + legend.
+      const breakdown = packCategoryBreakdown(items);
+      if (breakdown.length > 0) html.push(packBreakdownChartHTML(breakdown));
       // Group by category, in PACK_CATEGORIES order
       const byCat = new Map();
       for (const it of items) {
@@ -2138,7 +2198,7 @@
         );
         const catPackedCount = cIts.filter(packItemPacked).length;
         html.push(`<section class="pack-cat">`);
-        html.push(`<header class="pack-cat-header"><span>${escapeHtml(cat.label)}</span><span class="pack-cat-stats">${catPackedCount}/${cIts.length} item${cIts.length === 1 ? "" : "s"} · ${ozToLb(catTotal)} lb</span></header>`);
+        html.push(`<header class="pack-cat-header"><span><span class="pack-cat-ic" aria-hidden="true">${cat.icon}</span>${escapeHtml(cat.label)}</span><span class="pack-cat-stats">${catPackedCount}/${cIts.length} item${cIts.length === 1 ? "" : "s"} · ${ozToLb(catTotal)} lb</span></header>`);
         for (const it of cIts) {
           const cond = packCondInfo(it.condition || "good");
           const qty = packItemQty(it);
@@ -2515,7 +2575,7 @@
     const catSel = $("pack-add-category");
     if (catSel && !catSel.options.length) {
       catSel.innerHTML = PACK_CATEGORIES.map((c) =>
-        `<option value="${escapeHtml(c.id)}">${escapeHtml(c.label)}</option>`
+        `<option value="${escapeHtml(c.id)}">${c.icon} ${escapeHtml(c.label)}</option>`
       ).join("");
     }
     const condSel = $("pack-add-condition");

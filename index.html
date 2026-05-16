@@ -1796,6 +1796,38 @@
     color: var(--muted);
     margin: 0 0 12px 0;
   }
+  /* Weight-by-category donut + legend */
+  #pack-body .pack-breakdown {
+    display: flex; align-items: center; gap: 16px;
+    padding: 12px; margin: 0 0 12px 0;
+    background: var(--panel-alt);
+    border: 1px solid var(--rule); border-radius: 6px;
+  }
+  #pack-body .pack-donut {
+    width: 96px; height: 96px; flex-shrink: 0;
+    transform: rotate(-90deg); /* start arcs at 12 o'clock */
+  }
+  #pack-body .pack-donut .pack-donut-seg { transition: stroke-dasharray .2s ease; }
+  #pack-body .pack-legend {
+    list-style: none; margin: 0; padding: 0;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 3px 16px;
+    flex: 1; min-width: 0;
+  }
+  #pack-body .pack-legend li {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; min-width: 0;
+  }
+  #pack-body .pack-leg-sw { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  #pack-body .pack-leg-ic { flex-shrink: 0; font-size: 12px; }
+  #pack-body .pack-leg-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+  #pack-body .pack-leg-val { margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+  #pack-body .pack-leg-val small { font-weight: 400; color: var(--muted); }
+  @media (max-width: 560px) {
+    #pack-body .pack-breakdown { flex-direction: column; align-items: stretch; }
+    #pack-body .pack-donut { align-self: center; }
+    #pack-body .pack-legend { grid-template-columns: 1fr; }
+  }
+  #pack-body .pack-cat-header .pack-cat-ic { margin-right: 6px; font-size: 13px; }
   #pack-body .pack-empty { color: var(--muted); font-style: italic; padding: 16px 0; text-align: center; }
   #pack-body .pack-cat {
     margin: 0 0 14px 0;
@@ -1938,6 +1970,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=62"></script>
+<script src="app.js?v=63"></script>
 </body>
 </html>
