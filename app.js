@@ -2719,7 +2719,14 @@
   function breakpointKind(name) {
     const n = String(name || "");
     if (/shelter|lean.?to|cabin|hut|campsite/i.test(n)) return { kind: "shelter", icon: "🛖" };
-    if (/\(US\s|\(SR\s|\(VA\s|\(NC\s|\(TN\s|\(NY\s|\(VT\s|\(NH\s|\(ME\s|\(CT\s|\(MA\s|\(GA\s|\(PA\s|\(MD\s|\(WV\s|\(NJ\s|Highway|Pkwy|Parkway|Road|Avenue|Boulevard|Drive|Pike|Route\s|\bRd\b|\bSt\b|\bAve\b|Trail Crossing/i.test(n)) return { kind: "road", icon: "🛣️" };
+    // Road crossing. The AT data names these bare ("Neels Gap, US 19",
+    // "NC 28", "USFS 42", "US 19E") far more often than parenthesized,
+    // so match a route designator + number anywhere, plus road words.
+    // Skip viewpoints whose name happens to contain "Rd"/"Dr".
+    if (!/vista|viewpoint|overlook/i.test(n) &&
+        /\b(US|GA|NC|TN|VA|WV|MD|PA|NJ|NY|CT|MA|VT|NH|ME|SR|SC|FS|USFS|FR|CR)\s?-?\s?\d|Highway|\bHwy\b|Pkwy|Parkway|Turnpike|\bPike\b|Boulevard|Avenue|\bAve\b|\bRd\b|Road|\bRoute\s|\bRt\b|\bRte\b|Skyway|Skyline Drive|Forest (Service )?Road|\bDrive\b|\bSt\b|Trail Crossing/i.test(n)) {
+      return { kind: "road", icon: "🛣️" };
+    }
     if (/(south end|north end)/i.test(n)) return { kind: "border", icon: "📍" };
     return { kind: "landmark", icon: "•" };
   }
