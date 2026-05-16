@@ -1380,11 +1380,17 @@
     border-bottom: 1px dashed var(--rule);
     font-size: 11.5px;
     display: grid;
-    grid-template-columns: 36px minmax(0, 1fr) auto auto auto;
+    grid-template-columns: 36px minmax(0, 1fr) auto auto auto auto;
     column-gap: 8px;
     align-items: center;
     line-height: 1.35;
   }
+  #planned-body .seg-line .seg-line-rm {
+    border: none; background: transparent; cursor: pointer;
+    color: var(--muted); font-size: 12px; padding: 2px 4px;
+    border-radius: 4px; line-height: 1;
+  }
+  #planned-body .seg-line .seg-line-rm:hover { background: var(--hover); color: var(--accent); }
   #planned-body .seg-line .seg-icons { font-size: 12px; line-height: 1; white-space: nowrap; opacity: 0.85; }
   /* Allow seg names to wrap onto a second line when long instead of
      truncating; aligns with the iti-row treatment above. */
@@ -1430,6 +1436,42 @@
   #planned-body .trip-actions { display: flex; gap: 6px; flex-wrap: wrap; }
   #planned-modal h2#planned-title { font-size: 19px; }
   #planned-modal #planned-trip-name { color: var(--accent); }
+  /* Trip builder — explicit State → Section → Add controls so each
+     trip's sections can be assembled without leaving the planner. */
+  #planned-body .trip-builder {
+    margin: 0 0 12px; padding: 10px;
+    background: var(--panel-alt); border: 1px solid var(--rule);
+    border-radius: 6px;
+  }
+  #planned-body .trip-builder .tb-title { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  #planned-body .trip-builder .tb-title strong { color: var(--ink); }
+  #planned-body .trip-builder .tb-row {
+    display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap;
+  }
+  #planned-body .trip-builder label {
+    display: flex; flex-direction: column; gap: 3px;
+    font-size: 11px; color: var(--muted); min-width: 0; flex: 1 1 140px;
+  }
+  #planned-body .trip-builder select {
+    font: inherit; font-size: 13px; padding: 5px 8px;
+    border: 1px solid var(--rule); border-radius: 4px;
+    background: var(--input-bg); color: var(--ink);
+    width: 100%; min-width: 0; box-sizing: border-box;
+  }
+  #planned-body .trip-builder .tb-add {
+    font: inherit; font-size: 13px; font-weight: 600;
+    padding: 6px 14px; border-radius: 4px; cursor: pointer;
+    background: var(--accent); color: #fff; border: 1px solid var(--accent);
+    flex: 0 0 auto;
+  }
+  #planned-body .trip-builder .tb-add:hover { filter: brightness(1.08); }
+  #planned-body .trip-builder .tb-add-state {
+    margin-top: 8px; font: inherit; font-size: 12px;
+    padding: 5px 10px; border-radius: 4px; cursor: pointer;
+    background: var(--input-bg); color: var(--ink);
+    border: 1px solid var(--rule);
+  }
+  #planned-body .trip-builder .tb-add-state:hover { border-color: var(--accent); }
   #planned-body .trip-control select {
     font: inherit;
     font-size: 12px;
@@ -2056,6 +2098,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=71"></script>
+<script src="app.js?v=72"></script>
 </body>
 </html>

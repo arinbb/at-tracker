@@ -1344,6 +1344,17 @@
   // but it's good enough for sidebar grouping.
   //  - NC/TN: split at lat 35.78 (≈Davenport Gap)
   //  - NJ/NY: split at lat 41.357 (≈NJ/NY state line on the AT)
+  // Effective state names in south→north trail order (NC/TN and NJ/NY
+  // split out just like the sidebar). Used by the trip builder dropdown.
+  function orderedStateNames() {
+    const seen = new Set();
+    const out = [];
+    for (const s of [...DATA.segments].sort((a, b) => a.id - b.id)) {
+      const n = effectiveStateName(s);
+      if (!seen.has(n)) { seen.add(n); out.push(n); }
+    }
+    return out;
+  }
   function effectiveStateName(seg) {
     const m = seg.geom && seg.geom.length > 0 ? seg.geom[Math.floor(seg.geom.length / 2)] : null;
     if (seg.state === "North Carolina/Tennessee") {
@@ -3017,13 +3028,29 @@
         `</select></label>`);
       html.push(`</div>`);
     }
+    // Trip builder: pick a state + section and add it straight to the
+    // trip you're viewing — no need to hunt for flag icons in the list.
+    {
+      const _bt = getActiveTrip();
+      const tName = (_bt && _bt.name) || "this trip";
+      const stateNames = orderedStateNames();
+      html.push(`<div class="trip-builder">`);
+      html.push(`<div class="tb-title">➕ Add sections to <strong>${escapeHtml(tName)}</strong></div>`);
+      html.push(`<div class="tb-row">`);
+      html.push(`<label>State<select id="tb-state">${stateNames.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("")}</select></label>`);
+      html.push(`<label>Section<select id="tb-section"></select></label>`);
+      html.push(`<button id="tb-add" class="tb-add" type="button">+ Add</button>`);
+      html.push(`</div>`);
+      html.push(`<button id="tb-add-state" class="tb-add-state" type="button">+ Add every unhiked section in this state</button>`);
+      html.push(`</div>`);
+    }
     // Defined here so they're in scope for the post-render initial itinerary
     // calculation below (outside the `else` block).
     const startDate = prefs.tripStartDate || todayISO();
     const zeroFreq = prefs.zeroDayFreq != null ? prefs.zeroDayFreq : 0;
 
     if (plannedSegs.length === 0) {
-      html.push(`<div class="empty">No planned segments yet. Click the flag icon next to any unhiked section to mark it as your next planned hike.</div>`);
+      html.push(`<div class="empty">No sections in this trip yet. Use <strong>Add sections</strong> above (pick a state, then a section), or click the flag icon next to any section in the Tracker list.</div>`);
     } else {
       const statsRows = [
         ["Sections", plannedSegs.length],
@@ -3108,6 +3135,7 @@
           `<span class="mi">${s.miles.toFixed(1)} / ${cumMi.toFixed(1)}</span>` +
           (hasElev ? `<span class="seg-elev">${elevStr}</span>` : `<span></span>`) +
           (hasElev ? difficultyBadgeHTML(segFtPerMi, { compact: true }) : `<span></span>`) +
+          `<button class="seg-line-rm" data-tb-remove="${s.id}" title="Remove this section from the trip" aria-label="Remove section from trip">✕</button>` +
           `</div>`
         );
       }
@@ -3185,6 +3213,63 @@
       chip.addEventListener("click", () => {
         if (chip.classList.contains("active")) return;
         switchTrip(chip.dataset.tripId);
+        renderPlannedSummary();
+      });
+    });
+    // ---- Trip builder (State → Section → Add) ----
+    function tbPopulateSections(stateName) {
+      const sel = $("tb-section");
+      if (!sel) return;
+      const segs = DATA.segments
+        .filter((s) => effectiveStateName(s) === stateName && !progress.has(s.id) && !planned.has(s.id))
+        .sort((a, b) => a.id - b.id);
+      if (segs.length === 0) {
+        sel.innerHTML = `<option value="">(all sections added or hiked)</option>`;
+      } else {
+        sel.innerHTML = segs
+          .map((s) => `<option value="${s.id}">${escapeHtml(s.from)} → ${escapeHtml(s.to)} · ${s.miles.toFixed(1)} mi</option>`)
+          .join("");
+      }
+    }
+    function tbCommitAdd(ids) {
+      const add = ids.filter((id) => Number.isFinite(id) && !planned.has(id) && !progress.has(id));
+      if (add.length === 0) return;
+      ensureActiveTrip();
+      for (const id of add) planned.add(id);
+      syncActiveTripFromPlanned();
+      saveTrips();
+      renderSections();
+      updateStats();
+      refreshMapStyles();
+      renderPlannedSummary();
+    }
+    if ($("tb-state")) {
+      tbPopulateSections($("tb-state").value);
+      $("tb-state").addEventListener("change", (e) => tbPopulateSections(e.target.value));
+      $("tb-add")?.addEventListener("click", () => {
+        const v = Number($("tb-section")?.value);
+        if (Number.isFinite(v)) tbCommitAdd([v]);
+      });
+      $("tb-add-state")?.addEventListener("click", () => {
+        const stateName = $("tb-state").value;
+        const ids = DATA.segments
+          .filter((s) => effectiveStateName(s) === stateName && !progress.has(s.id) && !planned.has(s.id))
+          .map((s) => s.id);
+        if (ids.length === 0) { alert(`Every section in ${stateName} is already in this trip or hiked.`); return; }
+        tbCommitAdd(ids);
+      });
+    }
+    // Remove a section from the trip directly from the list.
+    $("planned-body").querySelectorAll("[data-tb-remove]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = Number(btn.dataset.tbRemove);
+        if (!Number.isFinite(id) || !planned.has(id)) return;
+        planned.delete(id);
+        syncActiveTripFromPlanned();
+        saveTrips();
+        renderSections();
+        updateStats();
+        refreshMapStyles();
         renderPlannedSummary();
       });
     });
