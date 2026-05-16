@@ -80,7 +80,15 @@
     pace: 12, // mi/day for trip-day estimates
     tripStartDate: null, // ISO date for the planned trip start
     zeroDayFreq: 0, // insert a rest day every N hike days; 0 = none
+    mapBase: "OpenStreetMap", // last-selected base tile layer
+    mapOverlays: {}, // stable-key -> bool; remembers toggled overlays
   };
+  // Did the user explicitly toggle this overlay before? If so honor that,
+  // otherwise fall back to the supplied default.
+  function wantOverlay(key, dflt) {
+    const mo = prefs.mapOverlays || {};
+    return Object.prototype.hasOwnProperty.call(mo, key) ? !!mo[key] : dflt;
+  }
   let profiles = [DEFAULT_PROFILE];
   let activeProfile = DEFAULT_PROFILE;
   let map = null;
@@ -940,18 +948,39 @@
         attribution: '© <a href="https://waymarkedtrails.org">Waymarked Trails</a> (CC-BY-SA)',
       }
     );
-    osm.addTo(map);
+    const baseLayers = {
+      "OpenStreetMap": osm,
+      "OpenTopoMap (terrain)": topo,
+      "Satellite (Esri)": sat,
+      "USGS Topo": usgsTopo,
+      "USGS Imagery + Topo": usgsImageryTopo,
+    };
+    // Restore the last-selected base layer.
+    const startBase = baseLayers[prefs.mapBase] || osm;
+    startBase.addTo(map);
+    // Stable key for the Waymarked overlay so persistence survives label
+    // text changes.
+    hikingOverlay._atOv = "waymarked-hiking";
+    if (wantOverlay("waymarked-hiking", false)) hikingOverlay.addTo(map);
     layerControl = L.control.layers(
-      {
-        "OpenStreetMap": osm,
-        "OpenTopoMap (terrain)": topo,
-        "Satellite (Esri)": sat,
-        "USGS Topo": usgsTopo,
-        "USGS Imagery + Topo": usgsImageryTopo,
-      },
+      baseLayers,
       { "🥾 Marked trails (Waymarked)": hikingOverlay },
       { position: "topright", collapsed: true }
     ).addTo(map);
+    // Remember the base layer the moment it changes.
+    map.on("baselayerchange", (e) => {
+      if (e && e.name) { prefs.mapBase = e.name; savePrefs(); }
+    });
+    // Generic overlay persistence: any overlay tagged with _atOv is
+    // remembered by that stable key when toggled.
+    map.on("overlayadd", (e) => {
+      const k = e.layer && e.layer._atOv;
+      if (k) { (prefs.mapOverlays = prefs.mapOverlays || {})[k] = true; savePrefs(); }
+    });
+    map.on("overlayremove", (e) => {
+      const k = e.layer && e.layer._atOv;
+      if (k) { (prefs.mapOverlays = prefs.mapOverlays || {})[k] = false; savePrefs(); }
+    });
 
     // Custom map legend control
     const Legend = L.Control.extend({
@@ -1185,24 +1214,21 @@
         .bindTooltip(`<strong>${escapeHtml(s.name)}</strong>`)
         .addTo(shelterLayer);
     });
-    if (prefs.showShelters) shelterLayer.addTo(map);
+    // Stable key for persistence; migrate the legacy prefs.showShelters.
+    shelterLayer._atOv = "shelters";
+    if (wantOverlay("shelters", prefs.showShelters !== false)) shelterLayer.addTo(map);
     // Shelters live in the same Leaflet layers panel as feature pins
     // (top-right ▤ icon) so all map-layer toggles are in one place.
-    // Keep the prefs.showShelters flag in sync via overlayadd/remove.
     if (layerControl) {
       layerControl.addOverlay(shelterLayer, `🛖 Shelters (${DATA.shelters.length})`);
     }
+    // Keep the legacy prefs.showShelters flag mirrored for any older
+    // readers; the generic _atOv handler persists prefs.mapOverlays.
     map.on("overlayadd", (e) => {
-      if (e.layer === shelterLayer) {
-        prefs.showShelters = true;
-        savePrefs();
-      }
+      if (e.layer === shelterLayer) { prefs.showShelters = true; savePrefs(); }
     });
     map.on("overlayremove", (e) => {
-      if (e.layer === shelterLayer) {
-        prefs.showShelters = false;
-        savePrefs();
-      }
+      if (e.layer === shelterLayer) { prefs.showShelters = false; savePrefs(); }
     });
   }
   function refreshMapStyles() {
@@ -1492,11 +1518,14 @@
       m.feature = f; // for click handlers
       m.addTo(featureLayerGroups.get(f.kind));
     }
-    // Register with the layer control + apply default visibility
+    // Register with the layer control + apply remembered (or default)
+    // visibility. Each group carries a stable _atOv key so the generic
+    // overlayadd/overlayremove handlers persist its on/off state.
     for (const cfg of FEATURE_KIND_CONFIG) {
       const lg = featureLayerGroups.get(cfg.kind);
       const count = lg.getLayers().length;
-      if (cfg.defaultOn) lg.addTo(map);
+      lg._atOv = "feat:" + cfg.kind;
+      if (wantOverlay(lg._atOv, cfg.defaultOn)) lg.addTo(map);
       if (layerControl) layerControl.addOverlay(lg, `${cfg.emoji} ${cfg.label} (${count})`);
     }
   }
@@ -5650,6 +5679,9 @@
 
   // -------- Boot --------
   async function boot() {
+    // Load prefs first so initMap / buildFeatureLayers can restore the
+    // remembered base layer and overlay toggles.
+    prefs = loadPrefs();
     initMap();
     let data;
     try {
@@ -5766,6 +5798,9 @@
         saveTrips();
       }
     }
+    // Reload prefs after profile/cloud restore (may have merged remote
+    // prefs); the early load at the top of boot() was just so initMap
+    // could restore the map layers.
     prefs = loadPrefs();
     // Apply any plan_*=… params in the URL hash (from a "Share plan" link)
     applyURLPlanMeta();
