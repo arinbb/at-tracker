@@ -652,19 +652,22 @@
 
   // -------- Persistence (per-profile) --------
   function loadProgressForActive() {
-    const hash = location.hash.replace(/^#/, "");
-    const params = new URLSearchParams(hash);
-    const code = params.get("c");
-    if (code) {
-      try { return decodeProgress(code); }
-      catch (e) { console.warn("bad URL code", e); }
-    }
+    // This device's saved state wins. The URL `c=` code is only an
+    // import seed for a device that has nothing saved yet (a first-time
+    // share-link recipient). Reading the URL first used to let a stale
+    // hash — restored tab, an old shared link kept open, a back-nav, or
+    // a cloud-sync race — silently resurrect cleared sections on reload.
     const raw = safeGet(progressKey(activeProfile));
-    if (raw) {
+    if (raw != null) {
       try {
         const obj = JSON.parse(raw);
         return new Map(Object.entries(obj).map(([k, v]) => [Number(k), v || ""]));
       } catch (e) { console.warn("bad localStorage progress", e); }
+    }
+    const code = new URLSearchParams(location.hash.replace(/^#/, "")).get("c");
+    if (code) {
+      try { return decodeProgress(code); }
+      catch (e) { console.warn("bad URL code", e); }
     }
     return new Map();
   }
@@ -771,19 +774,19 @@
   }
 
   function loadPlannedForActive() {
-    const hash = location.hash.replace(/^#/, "");
-    const params = new URLSearchParams(hash);
-    const code = params.get("pl");
-    if (code) {
-      try { return decodePlanned(code); }
-      catch (e) { console.warn("bad URL planned code", e); }
-    }
+    // Same precedence as progress: local device state wins; the URL
+    // `pl=` code only seeds a device with nothing saved yet.
     const raw = safeGet(plannedKey(activeProfile));
-    if (raw) {
+    if (raw != null) {
       try {
         const arr = JSON.parse(raw);
         if (Array.isArray(arr)) return new Set(arr.map(Number));
       } catch (e) {}
+    }
+    const code = new URLSearchParams(location.hash.replace(/^#/, "")).get("pl");
+    if (code) {
+      try { return decodePlanned(code); }
+      catch (e) { console.warn("bad URL planned code", e); }
     }
     return new Set();
   }
