@@ -838,6 +838,17 @@
      so it isn't black-on-black in dark mode. */
   body.theme-dark .split-custom-row input,
   body.theme-dark .split-date-row input { color-scheme: dark; }
+  .split-dir-btn {
+    display: flex; align-items: center; gap: 10px; justify-content: space-between;
+    width: 100%; margin: 10px 0 0; padding: 7px 12px;
+    font: inherit; font-size: 12.5px; text-align: left;
+    background: var(--input-bg); color: var(--ink);
+    border: 1px solid var(--rule); border-radius: 6px; cursor: pointer;
+  }
+  .split-dir-btn:hover { border-color: var(--accent); }
+  .split-dir-btn .split-dir-lbl { color: var(--muted); }
+  .split-dir-btn .split-dir-lbl strong { color: var(--ink); }
+  .split-dir-btn .split-dir-swap { color: var(--accent); font-weight: 600; white-space: nowrap; }
   .split-preview { margin: 14px 0 4px; }
   /* Interactive "where did you stop" bar: the section start→end as a
      track you tap or drag. Hiked portion green, the rest unhiked-brown. */
@@ -1089,6 +1100,7 @@
   <button type="button" data-tab="pack" id="pack-btn" role="tab" aria-selected="false"><span class="tab-icon">🎒</span><span class="tab-label"> Pack</span></button>
   <button type="button" data-tab="stats" id="stats-btn" role="tab" aria-selected="false"><span class="tab-icon">📊</span><span class="tab-label"> Stats</span></button>
   <button type="button" data-tab="settings" id="settings-tab" role="tab" aria-selected="false"><span class="tab-icon">⚙</span><span class="tab-label"> Settings</span></button>
+  <button type="button" id="theme-tab-btn" class="tab-search tab-tool" title="Toggle light / dark" aria-label="Toggle light or dark theme">☾</button>
   <button type="button" id="search-btn" class="tab-search" title="Search trail features (press /)" aria-label="Search">🔎</button>
 </nav>
 
@@ -1158,6 +1170,10 @@
     <h2>Partial progress</h2>
     <p id="split-seg-name" style="margin: 0 0 4px; font-weight: 600; color: var(--ink);"></p>
     <p style="margin-top: 4px;">You hiked part of this section and turned back. <strong>Tap or drag along the bar</strong> to mark where you stopped — its mileage counts toward your total, and the rest stays on your to-do list.</p>
+    <button type="button" id="split-dir-btn" class="split-dir-btn" title="Flip which end you started hiking from">
+      <span class="split-dir-lbl">Hiked from: <strong id="split-dir-from"></strong></span>
+      <span class="split-dir-swap" aria-hidden="true">⇄ flip</span>
+    </button>
     <div class="split-preview" id="split-preview">
       <div class="split-scrub" id="split-scrub" role="slider" tabindex="0"
            aria-label="Where you stopped, in miles from the start of the section"
@@ -1970,6 +1986,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=63"></script>
+<script src="app.js?v=64"></script>
 </body>
 </html>

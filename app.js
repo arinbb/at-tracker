@@ -779,6 +779,10 @@
       atMi,
       label: String(v.label || "").slice(0, 200),
       date: typeof v.date === "string" ? v.date.slice(0, 10) : "",
+      // rev = the hiked portion is anchored at the section's *end*
+      // (seg.to) rather than its start — i.e. you hiked it from the
+      // opposite direction. Default false keeps older data unchanged.
+      rev: !!v.rev,
     };
   }
   function saveSplits() {
@@ -1122,7 +1126,11 @@
       if (progress.has(id)) continue; // fully hiked supersedes
       const seg = segIndex.get(id);
       if (!seg || !seg.geom) continue;
-      const pts = geomPrefixLatLngs(seg.geom, Math.min(sp.atMi, seg.miles));
+      const len = Math.min(sp.atMi, seg.miles);
+      // rev splits anchor the hiked stretch at the section's far end,
+      // so draw the geometry suffix (walk the reversed line by `len`).
+      const geom = sp.rev ? [...seg.geom].slice().reverse() : seg.geom;
+      const pts = geomPrefixLatLngs(geom, len);
       if (pts.length < 2) continue;
       wantIds.add(id);
       const color = _cssVar("--hike", "#2a7d3a");
@@ -1663,8 +1671,9 @@
     const splitBtn = hiked
       ? ""
       : `<button class="split-btn${isPartial ? " on" : ""}" data-split="${seg.id}" title="${isPartial ? "Edit partial progress" : "Mark partially hiked (turned back partway)"}" aria-label="Mark partially hiked" aria-pressed="${isPartial}"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 8h5"/><circle cx="8.5" cy="8" r="2.1" fill="${isPartial ? "currentColor" : "none"}"/><path d="M10.6 8h4" stroke-dasharray="2 2"/></svg></button>`;
+    const partialFrom = sp && sp.rev ? seg.to : seg.from;
     const partialRow = isPartial
-      ? `<div class="partial-row">Partly done — hiked <strong>${Math.min(sp.atMi, seg.miles).toFixed(1)} mi</strong>${sp.label ? ` to <strong>${escapeHtml(sp.label)}</strong>` : ""}${sp.date ? ` on ${escapeHtml(sp.date)}` : ""}; ${Math.max(0, seg.miles - sp.atMi).toFixed(1)} mi left</div>`
+      ? `<div class="partial-row">Partly done — hiked <strong>${Math.min(sp.atMi, seg.miles).toFixed(1)} mi</strong> from the <strong>${escapeHtml(partialFrom)}</strong> end${sp.label ? ` to <strong>${escapeHtml(sp.label)}</strong>` : ""}${sp.date ? ` on ${escapeHtml(sp.date)}` : ""}; ${Math.max(0, seg.miles - sp.atMi).toFixed(1)} mi left</div>`
       : "";
     return `<div class="seg${hiked ? " hiked" : ""}${isPartial ? " partial" : ""}${isPlanned ? " planned" : ""}" data-seg="${seg.id}">` +
       `<input type="checkbox" data-toggle="${seg.id}" ${hiked ? "checked" : ""} title="Click to mark hiked; shift-click (or use Multi-select) to mark a range" aria-label="Mark ${escapeHtml(seg.from)} to ${escapeHtml(seg.to)} as hiked"/>` +
@@ -2434,7 +2443,13 @@
     try {
       if (!m || m.size === 0) return "";
       const obj = {};
-      for (const [id, v] of m) obj[id] = [v.atMi, v.label || "", v.date || ""];
+      // 4th element (rev) only emitted when true, so existing 3-element
+      // codes keep decoding identically.
+      for (const [id, v] of m) {
+        obj[id] = v.rev
+          ? [v.atMi, v.label || "", v.date || "", 1]
+          : [v.atMi, v.label || "", v.date || ""];
+      }
       const json = JSON.stringify(obj);
       if (typeof LZString !== "undefined" && LZString.compressToEncodedURIComponent) {
         return LZString.compressToEncodedURIComponent(json);
@@ -2460,7 +2475,7 @@
       for (const [k, arr] of Object.entries(obj)) {
         const id = Number(k);
         if (!Number.isFinite(id) || !Array.isArray(arr)) continue;
-        const rec = sanitizeSplit({ atMi: arr[0], label: arr[1], date: arr[2] });
+        const rec = sanitizeSplit({ atMi: arr[0], label: arr[1], date: arr[2], rev: !!arr[3] });
         if (rec) m.set(id, rec);
       }
       return m;
@@ -3706,6 +3721,11 @@
     document.body.classList.remove("theme-vintage");
     const btn = $("theme-btn");
     if (btn) btn.textContent = wantDark ? "☼ Toggle theme" : "☾ Toggle theme";
+    const tabBtn = $("theme-tab-btn");
+    if (tabBtn) {
+      tabBtn.textContent = wantDark ? "☼" : "☾";
+      tabBtn.title = wantDark ? "Switch to light mode" : "Switch to dark mode";
+    }
     if (typeof refreshMapStyles === "function") refreshMapStyles();
   }
   function toggleTheme() {
@@ -4274,6 +4294,43 @@
   // -------- Split / partial-progress modal --------
   let splitModalSegId = null;
   let splitCands = [];
+  // Modal selection. `mi` is the hiked LENGTH in miles; `rev` means the
+  // hiked stretch is anchored at the section's end (seg.to) — i.e. it was
+  // walked from the opposite direction. `label` is the landmark name, if
+  // the stop coincides with one.
+  let splitSel = { mi: null, label: "" };
+  let splitRev = false;
+  function splitInset(seg) { return Math.min(0.1, seg.miles * 0.02); }
+  // Native distance-from-seg.from of a landmark, given current direction:
+  // when reversed, the hiked length to reach a landmark is measured from
+  // the far end instead.
+  function splitLenForCand(seg, cand) {
+    return splitRev ? seg.miles - cand.atMi : cand.atMi;
+  }
+  function setSplitSelection(mi, label) {
+    const seg = segIndex.get(splitModalSegId);
+    if (!seg) return;
+    const inset = splitInset(seg);
+    splitSel = {
+      mi: Math.max(inset, Math.min(seg.miles - inset, mi)),
+      label: label || "",
+    };
+    // Reflect the magnitude in the precise-entry field for transparency.
+    $("split-custom-mi").value = (Math.round(splitSel.mi * 10) / 10).toFixed(1);
+    updateSplitPreview();
+  }
+  function renderSplitDir() {
+    const seg = segIndex.get(splitModalSegId);
+    if (!seg) return;
+    $("split-dir-from").textContent = splitRev ? seg.to : seg.from;
+    // Bold whichever end you started from.
+    const startEl = $("split-scrub-start");
+    const endEl = $("split-scrub-end");
+    if (startEl && endEl) {
+      startEl.style.fontWeight = splitRev ? "400" : "700";
+      endEl.style.fontWeight = splitRev ? "700" : "400";
+    }
+  }
   function openSplitModal(id) {
     const seg = segIndex.get(id);
     if (!seg) return;
@@ -4281,6 +4338,7 @@
     $("split-seg-name").textContent = `${seg.from} → ${seg.to} (${seg.miles.toFixed(1)} mi)`;
     $("split-error").textContent = "";
     const existing = splits.get(id) || null;
+    splitRev = !!(existing && existing.rev);
     const cands = splitCandidates(seg);
     splitCands = cands;
     const host = $("split-candidates");
@@ -4288,7 +4346,7 @@
       host.innerHTML = `<div class="split-no-cands">No mapped landmarks along this section — use the bar or type a mileage.</div>`;
     } else {
       host.innerHTML = cands
-        .map((c, i) => {
+        .map((c) => {
           const checked = existing && existing.label === c.label ? " checked" : "";
           return `<label><input type="radio" name="split-pt" value="${c.atMi}" data-label="${escapeHtml(c.label)}"${checked}/>` +
             `<span>${escapeHtml(c.label)}</span>` +
@@ -4296,10 +4354,8 @@
         })
         .join("");
     }
-    // End labels on the scrub track.
     $("split-scrub-start").textContent = seg.from;
     $("split-scrub-end").textContent = seg.to;
-    // Landmark ticks on the bar so you can aim for one when tapping.
     const ticks = $("split-scrub-ticks");
     ticks.innerHTML = cands
       .map((c) => {
@@ -4307,49 +4363,53 @@
         return `<div class="tick" style="left:${pct}%"></div>`;
       })
       .join("");
-    // Prefill custom miles only when the existing split isn't one of the
-    // listed landmarks (a free mile point).
-    const isListed = existing && cands.some((c) => c.label === existing.label && c.atMi === existing.atMi);
-    $("split-custom-mi").value = existing && !isListed ? existing.atMi : "";
     $("split-date").value = (existing && existing.date) || todayISO();
     $("split-date").max = todayISO();
     $("split-clear").style.display = existing ? "" : "none";
-    // Open the "more precise" disclosure only when there's an existing
-    // custom mileage to show; otherwise keep the bar front and center.
+    const isListed = existing && cands.some((c) => c.label === existing.label);
     const moreEl = document.querySelector(".split-more");
     if (moreEl) moreEl.open = !!(existing && !isListed);
+    // Seed the selection from any existing split (its atMi is the hiked
+    // length; rev was applied above).
+    if (existing) {
+      splitSel = { mi: existing.atMi, label: existing.label || "" };
+      $("split-custom-mi").value = (Math.round(existing.atMi * 10) / 10).toFixed(1);
+    } else {
+      splitSel = { mi: null, label: "" };
+      $("split-custom-mi").value = "";
+    }
+    renderSplitDir();
     updateSplitPreview();
     $("split-modal").classList.add("show");
   }
-  // Tap/drag along the bar → choose a stop point. Snaps to a nearby
-  // landmark when the tap lands close to one (so it's easy to "stop at
-  // the shelter"), otherwise records a free mile point.
+  // Tap/drag along the bar → choose a stop point. The bar is spatially
+  // fixed (seg.from at left, seg.to at right); the hiked length depends
+  // on which end you started from. Snaps to a nearby landmark.
   function applySplitFraction(frac) {
     const seg = segIndex.get(splitModalSegId);
     if (!seg) return;
     const f = Math.max(0, Math.min(1, frac));
-    let mi = f * seg.miles;
-    // Keep it a real partial (never exactly 0 or the whole thing).
-    const inset = Math.min(0.1, seg.miles * 0.02);
-    mi = Math.max(inset, Math.min(seg.miles - inset, mi));
-    // Snap to a landmark within ~0.3 mi of the tap.
+    // Snap to a landmark whose on-bar position is within ~0.3 mi.
     let snap = null;
     let bestD = 0.3;
+    const tapMiFromStart = f * seg.miles;
     for (const c of splitCands) {
-      const d = Math.abs(c.atMi - mi);
+      const d = Math.abs(c.atMi - tapMiFromStart);
       if (d < bestD) { bestD = d; snap = c; }
     }
-    const radios = document.querySelectorAll('#split-candidates input[name="split-pt"]');
     if (snap) {
-      $("split-custom-mi").value = "";
+      setSplitSelection(splitLenForCand(seg, snap), snap.label);
+      const radios = document.querySelectorAll('#split-candidates input[name="split-pt"]');
       radios.forEach((r) => {
         r.checked = r.dataset.label === snap.label && Number(r.value) === snap.atMi;
       });
     } else {
-      radios.forEach((r) => { r.checked = false; });
-      $("split-custom-mi").value = (Math.round(mi * 10) / 10).toFixed(1);
+      document.querySelectorAll('#split-candidates input[name="split-pt"]').forEach((r) => { r.checked = false; });
+      // Hiked length: from the left end when forward, from the right when
+      // reversed.
+      const len = splitRev ? (1 - f) * seg.miles : f * seg.miles;
+      setSplitSelection(len, "");
     }
-    updateSplitPreview();
   }
   function scrubFractionFromEvent(e) {
     const el = $("split-scrub");
@@ -4357,23 +4417,12 @@
     const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
     return rect.width > 0 ? x / rect.width : 0;
   }
-  // The miles currently chosen in the modal (custom field wins over a
-  // selected landmark), or null if nothing valid is chosen yet.
   function currentSplitMi() {
-    const customRaw = $("split-custom-mi").value.trim();
-    if (customRaw !== "") {
-      const n = Number(customRaw);
-      return Number.isFinite(n) ? n : null;
-    }
-    const radio = document.querySelector('#split-candidates input[name="split-pt"]:checked');
-    if (radio) {
-      const n = Number(radio.value);
-      return Number.isFinite(n) ? n : null;
-    }
-    return null;
+    return splitSel && Number.isFinite(splitSel.mi) ? splitSel.mi : null;
   }
-  // Live proportion bar: hiked portion in the trail's hiked color, the
-  // rest in the darker unhiked color — mirrors how the map renders it.
+  // Live proportion bar. The hiked stretch is the section prefix when
+  // forward, or the suffix (anchored at seg.to) when reversed — matching
+  // how the map draws it.
   function updateSplitPreview() {
     const seg = segIndex.get(splitModalSegId);
     const bar = $("split-preview-done");
@@ -4384,16 +4433,27 @@
     const mi = currentSplitMi();
     const done = mi === null || mi <= 0 ? 0 : Math.max(0, Math.min(seg.miles, mi));
     const pct = seg.miles > 0 ? (done / seg.miles) * 100 : 0;
-    bar.style.width = `${pct}%`;
-    if (handle) handle.style.left = `${pct}%`;
+    if (splitRev) {
+      // Suffix: fill hugs the right (seg.to) end.
+      bar.style.left = `${100 - pct}%`;
+      bar.style.width = `${pct}%`;
+      bar.style.borderRadius = "0 7px 7px 0";
+      if (handle) handle.style.left = `${100 - pct}%`;
+    } else {
+      bar.style.left = "0%";
+      bar.style.width = `${pct}%`;
+      bar.style.borderRadius = "7px 0 0 7px";
+      if (handle) handle.style.left = `${pct}%`;
+    }
     if (scrub) {
       scrub.setAttribute("aria-valuemax", String(seg.miles.toFixed(1)));
       scrub.setAttribute("aria-valuenow", String(done.toFixed(1)));
       scrub.setAttribute("aria-valuetext", `${done.toFixed(1)} of ${seg.miles.toFixed(1)} miles`);
     }
+    const fromEnd = splitRev ? seg.to : seg.from;
     cap.textContent = done <= 0
       ? `Tap the bar where you turned back — ${seg.miles.toFixed(1)} mi total`
-      : `${done.toFixed(1)} mi hiked · ${(seg.miles - done).toFixed(1)} mi left`;
+      : `${done.toFixed(1)} mi hiked from the ${fromEnd} end · ${(seg.miles - done).toFixed(1)} mi left`;
   }
   function saveSplitFromModal() {
     const id = splitModalSegId;
@@ -4401,19 +4461,9 @@
     if (!seg) return;
     const err = $("split-error");
     err.textContent = "";
-    const radio = document.querySelector('#split-candidates input[name="split-pt"]:checked');
-    const customRaw = $("split-custom-mi").value.trim();
-    let atMi = null;
-    let label = "";
-    if (customRaw !== "") {
-      atMi = Number(customRaw);
-      label = "";
-    } else if (radio) {
-      atMi = Number(radio.value);
-      label = radio.dataset.label || "";
-    }
+    const atMi = currentSplitMi();
     if (atMi === null || !Number.isFinite(atMi)) {
-      err.textContent = "Pick a landmark or enter how many miles you hiked.";
+      err.textContent = "Tap the bar, pick a landmark, or type how many miles you hiked.";
       return;
     }
     if (atMi <= 0 || atMi >= seg.miles) {
@@ -4421,7 +4471,12 @@
       return;
     }
     const date = $("split-date").value || "";
-    splits.set(id, { atMi: Math.round(atMi * 100) / 100, label, date });
+    splits.set(id, {
+      atMi: Math.round(atMi * 100) / 100,
+      label: splitSel.label || "",
+      date,
+      rev: splitRev,
+    });
     progress.delete(id); // partial and fully-hiked are mutually exclusive
     saveSplits();
     updateStats();
@@ -5470,16 +5525,35 @@
       $("split-modal").classList.remove("show");
       splitModalSegId = null;
     });
-    // Typing a custom mileage clears any landmark radio selection.
-    $("split-custom-mi")?.addEventListener("input", () => {
-      const r = document.querySelector('#split-candidates input[name="split-pt"]:checked');
-      if (r && $("split-custom-mi").value.trim() !== "") r.checked = false;
+    // Flip which end you started hiking from.
+    $("split-dir-btn")?.addEventListener("click", () => {
+      splitRev = !splitRev;
+      renderSplitDir();
+      // Keep the same hiked length; only the anchored end changes.
       updateSplitPreview();
     });
-    // Picking a landmark clears the custom mileage field.
-    $("split-candidates")?.addEventListener("change", (e) => {
-      if (e.target && e.target.name === "split-pt") $("split-custom-mi").value = "";
+    // Typing a precise mileage = a free point (clears landmark).
+    $("split-custom-mi")?.addEventListener("input", () => {
+      const raw = $("split-custom-mi").value.trim();
+      if (raw === "") return;
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return;
+      document.querySelectorAll('#split-candidates input[name="split-pt"]').forEach((r) => { r.checked = false; });
+      // setSplitSelection rewrites the field; preserve the caret-free
+      // raw value by only clamping on blur-like changes. Here we still
+      // clamp for correctness.
+      const seg = segIndex.get(splitModalSegId);
+      const inset = seg ? splitInset(seg) : 0;
+      splitSel = { mi: seg ? Math.max(inset, Math.min(seg.miles - inset, n)) : n, label: "" };
       updateSplitPreview();
+    });
+    // Picking a landmark sets the selection (length depends on direction).
+    $("split-candidates")?.addEventListener("change", (e) => {
+      if (!e.target || e.target.name !== "split-pt") return;
+      const seg = segIndex.get(splitModalSegId);
+      if (!seg) return;
+      const cand = { label: e.target.dataset.label || "", atMi: Number(e.target.value) };
+      setSplitSelection(splitLenForCand(seg, cand), cand.label);
     });
     // Tap / drag along the bar to mark where you stopped.
     const scrub = $("split-scrub");
@@ -5651,6 +5725,7 @@
       setTimeout(() => (btn.textContent = orig), 1200);
     });
     $("theme-btn").addEventListener("click", toggleTheme);
+    $("theme-tab-btn")?.addEventListener("click", toggleTheme);
 
     // Auto-update theme if user has system pref and we're following it
     if (window.matchMedia) {
