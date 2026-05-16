@@ -1756,6 +1756,7 @@
   function drawLoreOnMap() {
     if (loreLayer) {
       try { map.removeLayer(loreLayer); } catch (e) {}
+      if (layerControl) try { layerControl.removeLayer(loreLayer); } catch (e) {}
     }
     loreLayer = L.layerGroup();
     for (const entry of LORE) {
@@ -1775,7 +1776,14 @@
       m.bindPopup(`<strong>${safeTitle}</strong><br><span style="font-style:italic">${safeBody}</span>${urlHtml}`, { maxWidth: 280 });
       m.addTo(loreLayer);
     }
-    loreLayer.addTo(map);
+    // A toggleable overlay like the others — stable key so on/off is
+    // remembered; defaults on to preserve prior behavior.
+    loreLayer._atOv = "lore";
+    const loreCount = loreLayer.getLayers().length;
+    if (layerControl) {
+      layerControl.addOverlay(loreLayer, `📖 Local lore (${loreCount})`);
+    }
+    if (wantOverlay("lore", true)) loreLayer.addTo(map);
   }
   function loreButtonHTML(segId) {
     const entries = loreBySegId.get(segId);
