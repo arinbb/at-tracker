@@ -3602,19 +3602,174 @@
     }
     return warning + summary + rows.join("");
   }
+  // ---- Print extras: route schematic SVG + full waypoint checklist ----
+  function featureKindIcon(kind) {
+    const c = FEATURE_KIND_CONFIG.find((x) => x.kind === kind);
+    return c ? c.emoji : "•";
+  }
+  // A clean vector drawing of the planned route — no tiles, prints crisp
+  // in black & white. Each contiguous run is its own polyline so gaps in
+  // the trip don't get bridged by a wrong straight line.
+  function buildRouteSchematicSVG(plannedSegs) {
+    const W = 620, H = 380, PAD = 26;
+    let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
+    for (const s of plannedSegs) {
+      for (const [lon, lat] of (s.geom || [])) {
+        if (lon < minLon) minLon = lon;
+        if (lon > maxLon) maxLon = lon;
+        if (lat < minLat) minLat = lat;
+        if (lat > maxLat) maxLat = lat;
+      }
+    }
+    if (!Number.isFinite(minLon) || minLon === maxLon && minLat === maxLat) return "";
+    const spanLon = Math.max(1e-6, maxLon - minLon);
+    const spanLat = Math.max(1e-6, maxLat - minLat);
+    // Uniform scale, centered, north-up.
+    const scale = Math.min((W - 2 * PAD) / spanLon, (H - 2 * PAD) / spanLat);
+    const offX = (W - spanLon * scale) / 2;
+    const offY = (H - spanLat * scale) / 2;
+    const px = (lon) => offX + (lon - minLon) * scale;
+    const py = (lat) => H - (offY + (lat - minLat) * scale);
+    const polylines = plannedSegs
+      .map((s) => {
+        const pts = (s.geom || []).map(([lon, lat]) => `${px(lon).toFixed(1)},${py(lat).toFixed(1)}`).join(" ");
+        return pts ? `<polyline points="${pts}" fill="none" stroke="#222" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>` : "";
+      })
+      .join("");
+    // Shelter dots from segment boundaries, plus start/end markers.
+    const dots = [];
+    const labels = [];
+    const seen = new Set();
+    plannedSegs.forEach((s) => {
+      const ends = [
+        { name: s.from, pt: (s.geom || [])[0] },
+        { name: s.to, pt: (s.geom || [])[(s.geom || []).length - 1] },
+      ];
+      for (const e of ends) {
+        if (!e.pt || seen.has(e.name)) continue;
+        seen.add(e.name);
+        if (breakpointKind(e.name).kind !== "shelter") continue;
+        const x = px(e.pt[0]), y = py(e.pt[1]);
+        dots.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="#2a7d3a"/>`);
+      }
+    });
+    const first = plannedSegs[0], last = plannedSegs[plannedSegs.length - 1];
+    const fg = (first.geom || [])[0];
+    const lg = (last.geom || [])[(last.geom || []).length - 1];
+    if (fg) {
+      labels.push(`<circle cx="${px(fg[0]).toFixed(1)}" cy="${py(fg[1]).toFixed(1)}" r="5" fill="#1a5fb4"/>` +
+        `<text x="${(px(fg[0]) + 8).toFixed(1)}" y="${(py(fg[1]) + 4).toFixed(1)}" font-size="11" fill="#1a5fb4">START · ${escapeHtml(first.from)}</text>`);
+    }
+    if (lg) {
+      labels.push(`<circle cx="${px(lg[0]).toFixed(1)}" cy="${py(lg[1]).toFixed(1)}" r="5" fill="#8b3a2f"/>` +
+        `<text x="${(px(lg[0]) - 8).toFixed(1)}" y="${(py(lg[1]) + 4).toFixed(1)}" font-size="11" fill="#8b3a2f" text-anchor="end">END · ${escapeHtml(last.to)}</text>`);
+    }
+    return `<svg class="print-schematic" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">` +
+      `<rect x="0" y="0" width="${W}" height="${H}" fill="#fff" stroke="#ccc"/>` +
+      polylines + dots.join("") + labels.join("") + `</svg>`;
+  }
+  // Ordered, de-duplicated list of every named waypoint along the route:
+  // section boundaries (shelters / road crossings / gaps) merged with
+  // FEATURES (peaks, views, towns, water, …), each with a checkbox.
+  function buildWaypointChecklist(plannedSegs) {
+    const rows = [];
+    for (const s of plannedSegs) {
+      const startMi = segCumulative.get(s.id) || 0;
+      const bf = breakpointKind(s.from), bt = breakpointKind(s.to);
+      rows.push({ name: s.from, mile: startMi, icon: bf.icon });
+      rows.push({ name: s.to, mile: startMi + s.miles, icon: bt.icon });
+    }
+    const featureBuckets = collectPlannedFeatures(plannedSegs);
+    for (const kind in featureBuckets) {
+      for (const f of featureBuckets[kind]) {
+        rows.push({
+          name: f.name,
+          mile: typeof f._mile === "number" ? f._mile : 0,
+          icon: featureKindIcon(kind),
+        });
+      }
+    }
+    rows.sort((a, b) => a.mile - b.mile);
+    // De-dup by name, keeping the earliest mile.
+    const seen = new Set();
+    const out = [];
+    for (const r of rows) {
+      const key = (r.name || "").toLowerCase().trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(r);
+    }
+    if (out.length === 0) return "";
+    const lis = out
+      .map((r) => `<li class="wp"><span class="wp-box">☐</span>` +
+        `<span class="wp-ic">${r.icon}</span>` +
+        `<span class="wp-nm">${escapeHtml(r.name)}</span>` +
+        `<span class="wp-mi">mi ${r.mile.toFixed(1)}</span></li>`)
+      .join("");
+    return `<h3>Waypoint checklist <small>(${out.length} named spots, in order)</small></h3>` +
+      `<ul class="wp-list">${lis}</ul>`;
+  }
+  let _printMapHome = null; // {parent, next} so we can put #map back
+  function buildPlannedPrintExtras() {
+    const plannedSegs = [...planned]
+      .filter((id) => !progress.has(id))
+      .map((id) => segIndex.get(id))
+      .filter(Boolean)
+      .sort((a, b) => a.id - b.id);
+    if (plannedSegs.length === 0) return null;
+    const wrap = document.createElement("div");
+    wrap.id = "planned-print-extras";
+    wrap.className = "print-only";
+    wrap.innerHTML =
+      `<h3>Route map</h3>` +
+      `<div id="print-map-slot"></div>` +
+      `<h3>Route schematic</h3>` +
+      buildRouteSchematicSVG(plannedSegs) +
+      buildWaypointChecklist(plannedSegs);
+    return { wrap, plannedSegs };
+  }
   // Print just the planned modal: temporarily set a body class that the
   // CSS uses to hide everything else, fire window.print(), restore.
   function printPlannedView() {
     document.body.classList.add("print-plan");
-    // Need the modal to be visible during print
     $("planned-modal").classList.add("show");
-    // Most browsers fire print() synchronously; afterprint event lets us cleanup
+    // Inject the schematic + checklist, and relocate the live Leaflet
+    // map into the printout fitted to the route (a real tile snapshot).
+    const extras = buildPlannedPrintExtras();
+    const mapEl = $("map");
+    if (extras) {
+      const body = $("planned-body");
+      if (body && body.parentNode) body.parentNode.insertBefore(extras.wrap, body.nextSibling);
+      const slot = $("print-map-slot");
+      if (slot && mapEl) {
+        _printMapHome = { parent: mapEl.parentNode, next: mapEl.nextSibling };
+        slot.appendChild(mapEl);
+        try {
+          map.invalidateSize();
+          const b = L.latLngBounds([]);
+          for (const s of extras.plannedSegs) {
+            for (const [lon, lat] of (s.geom || [])) b.extend([lat, lon]);
+          }
+          if (b.isValid()) map.fitBounds(b, { padding: [20, 20] });
+        } catch (e) {}
+      }
+    }
     const cleanup = () => {
       document.body.classList.remove("print-plan");
+      // Put the map back exactly where it was.
+      if (_printMapHome && mapEl) {
+        if (_printMapHome.next) _printMapHome.parent.insertBefore(mapEl, _printMapHome.next);
+        else _printMapHome.parent.appendChild(mapEl);
+        _printMapHome = null;
+        try { map.invalidateSize(); } catch (e) {}
+      }
+      const ex = $("planned-print-extras");
+      if (ex && ex.parentNode) ex.parentNode.removeChild(ex);
       window.removeEventListener("afterprint", cleanup);
     };
     window.addEventListener("afterprint", cleanup);
-    setTimeout(() => window.print(), 50);
+    // Give tiles a beat to load at the new size before printing.
+    setTimeout(() => window.print(), 450);
   }
   // Build a plain-text summary of the active trip suitable for messaging apps.
   function planTextSummary(plannedSegs, itinerary) {

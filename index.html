@@ -756,7 +756,36 @@
     body.print-plan h2 { font-size: 18px; }
     body.print-plan h3 { font-size: 13px; margin-top: 12px; }
     body.print-plan .iti-row, body.print-plan .seg-line { page-break-inside: avoid; }
+    /* Print-only extras (schematic + checklist + relocated map). */
+    body.print-plan .print-only { display: block !important; }
+    body.print-plan #print-map-slot #map {
+      display: block !important;
+      position: relative !important;
+      width: 100% !important;
+      height: 320px !important;
+      flex: none !important;
+      page-break-inside: avoid;
+    }
+    body.print-plan .print-schematic {
+      width: 100%; height: auto; max-height: 380px;
+      page-break-inside: avoid; margin: 4px 0 8px;
+    }
+    body.print-plan .wp-list {
+      list-style: none; margin: 4px 0 0; padding: 0;
+      column-count: 2; column-gap: 28px;
+    }
+    body.print-plan .wp-list .wp {
+      display: flex; align-items: baseline; gap: 6px;
+      font-size: 11px; padding: 2px 0;
+      break-inside: avoid; page-break-inside: avoid;
+    }
+    body.print-plan .wp-box { font-size: 12px; }
+    body.print-plan .wp-nm { flex: 1; }
+    body.print-plan .wp-mi { color: #555; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    body.print-plan #planned-print-extras { page-break-before: auto; }
   }
+  /* Never show the print-only block on screen. */
+  .print-only { display: none; }
 
   /* ===== Primary tab bar — the top-level mode switcher =====
      One bar, one obvious place to switch between the major sections of
@@ -1990,6 +2019,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=65"></script>
+<script src="app.js?v=66"></script>
 </body>
 </html>
