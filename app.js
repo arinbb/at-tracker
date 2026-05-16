@@ -58,6 +58,9 @@
   let trips = []; // [{id, name, createdAt, segs: [ids]}]; planned is derived from active trip
   let activeTripId = null;
   let notes = new Map();
+  // Per-section "who I hiked with / encountered" — kept separate from the
+  // general notes field so trip-company is its own prompt. Map<segId,str>.
+  let companions = new Map();
   // Partial completion. A segment can be "split at a point": you hiked the
   // first `atMi` miles (ending at landmark `label`) on `date`, the rest is
   // still to do. Invariant: a segId in `splits` is NOT in `progress`
@@ -95,6 +98,7 @@
   let addTripMode = false; // "+ Trip" mode: pick start, then end, then date
   let addTripStart = null; // first segId picked in add-trip mode
   let notesSaveTimer = null; // debounced notes flush
+  let companionsSaveTimer = null; // debounced companions flush
   let cloudUser = null; // Firebase User when signed in
   let cloudSaveTimer = null; // debounced cloud write
   let cloudInhibit = false; // suppress writes during initial cloud->local merge
@@ -111,6 +115,7 @@
   }
   function progressKey(name) { return `at-tracker-progress::${name}`; }
   function notesKey(name) { return `at-tracker-notes::${name}`; }
+  function companionsKey(name) { return `at-tracker-companions::${name}`; }
   function plannedKey(name) { return `at-tracker-planned::${name}`; }
   function tripsKey(name) { return `at-tracker-trips::${name}`; }
   function packKey(name) { return `at-tracker-pack::${name}`; }
@@ -615,6 +620,7 @@
     progress = loadProgressForActive();
     planned = loadPlannedForActive();
     notes = loadNotesForActive();
+    companions = loadCompanionsForActive();
     splits = loadSplitsForActive();
     pack = loadPackForActive();
     {
@@ -745,6 +751,14 @@
       return new Map(Object.entries(obj).map(([k, v]) => [Number(k), v || ""]));
     } catch (e) { return new Map(); }
   }
+  function loadCompanionsForActive() {
+    const raw = safeGet(companionsKey(activeProfile));
+    if (!raw) return new Map();
+    try {
+      const obj = JSON.parse(raw);
+      return new Map(Object.entries(obj).map(([k, v]) => [Number(k), v || ""]));
+    } catch (e) { return new Map(); }
+  }
   function loadPackForActive() {
     const raw = safeGet(packKey(activeProfile));
     if (!raw) return { items: [] };
@@ -833,6 +847,12 @@
     const obj = {};
     for (const [k, v] of notes) if (v) obj[k] = v;
     safeSet(notesKey(activeProfile), JSON.stringify(obj));
+    scheduleCloudSave();
+  }
+  function saveCompanions() {
+    const obj = {};
+    for (const [k, v] of companions) if (v) obj[k] = v;
+    safeSet(companionsKey(activeProfile), JSON.stringify(obj));
     scheduleCloudSave();
   }
   function savePrefs() { safeSet(LS_PREFS, JSON.stringify(prefs)); }
@@ -1659,6 +1679,7 @@
     const hiked = progress.has(seg.id);
     const date = progress.get(seg.id) || "";
     const note = notes.get(seg.id) || "";
+    const company = companions.get(seg.id) || "";
     const cumStart = segCumulative.get(seg.id) || 0;
     const displayMi = reverse ? (totalMi - (cumStart + seg.miles)) : cumStart;
     const isPlanned = planned.has(seg.id);
@@ -1686,7 +1707,8 @@
       `</div>` +
       partialRow +
       `<div class="date-row"><label style="font-size:12px;color:var(--muted)">Date:</label><input type="date" data-date="${seg.id}" value="${escapeHtml(date)}" max="${today}" /></div>` +
-      `<div class="notes-row"><textarea data-note="${seg.id}" placeholder="Notes (weather, who you hiked with, conditions…)" rows="1">${escapeHtml(note)}</textarea></div>` +
+      `<div class="notes-row"><textarea data-note="${seg.id}" placeholder="Notes (weather, trail conditions, gear…)" rows="1">${escapeHtml(note)}</textarea></div>` +
+      `<div class="notes-row companions-row"><textarea data-companions="${seg.id}" placeholder="Who I hiked with / hikers I met…" rows="1">${escapeHtml(company)}</textarea></div>` +
       loreRowHTML(seg.id) +
       `</div>`;
   }
@@ -1882,6 +1904,7 @@
       const today = todayISO();
       for (const seg of visible) {
         const note = notes.get(seg.id) || "";
+        const company = companions.get(seg.id) || "";
         const cumStart = segCumulative.get(seg.id) || 0;
         html.push(`<div class="seg hiked" data-seg="${seg.id}">`);
         html.push(`<input type="checkbox" data-toggle="${seg.id}" checked />`);
@@ -1891,7 +1914,8 @@
         html.push(`<label style="font-size:12px;color:var(--muted)">Date:</label>`);
         html.push(`<input type="date" data-date="${seg.id}" value="${escapeHtml(date === "(no date)" ? "" : date)}" max="${today}" />`);
         html.push(`</div>`);
-        html.push(`<div class="notes-row"><textarea data-note="${seg.id}" placeholder="Notes (weather, who you hiked with, conditions…)" rows="1">${escapeHtml(note)}</textarea></div>`);
+        html.push(`<div class="notes-row"><textarea data-note="${seg.id}" placeholder="Notes (weather, trail conditions, gear…)" rows="1">${escapeHtml(note)}</textarea></div>`);
+        html.push(`<div class="notes-row companions-row"><textarea data-companions="${seg.id}" placeholder="Who I hiked with / hikers I met…" rows="1">${escapeHtml(company)}</textarea></div>`);
         html.push(`</div>`);
       }
       html.push(`</div></section>`);
@@ -4269,11 +4293,21 @@
       clearTimeout(notesSaveTimer);
       notesSaveTimer = setTimeout(() => { saveNotes(); notesSaveTimer = null; }, 500);
     }
+    const compInput = e.target.closest("[data-companions]");
+    if (compInput) {
+      const id = Number(compInput.dataset.companions);
+      companions.set(id, compInput.value);
+      clearTimeout(companionsSaveTimer);
+      companionsSaveTimer = setTimeout(() => { saveCompanions(); companionsSaveTimer = null; }, 500);
+    }
   }
   // Flush any pending note save on page hide so we never lose typing.
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden" && notesSaveTimer) {
       clearTimeout(notesSaveTimer); notesSaveTimer = null; saveNotes();
+    }
+    if (document.visibilityState === "hidden" && companionsSaveTimer) {
+      clearTimeout(companionsSaveTimer); companionsSaveTimer = null; saveCompanions();
     }
   });
   function onSidebarHover(e) {
@@ -4592,9 +4626,11 @@
     progress = new Map();
     planned = new Set();
     notes = new Map();
+    companions = new Map();
     splits = new Map();
     saveProgress();
     saveNotes();
+    saveCompanions();
     saveSplits();
     renderSections();
     updateStats();
@@ -4613,9 +4649,11 @@
     progress = new Map();
     planned = new Set();
     notes = new Map();
+    companions = new Map();
     splits = new Map();
     saveProgress();
     saveNotes();
+    saveCompanions();
     saveSplits();
     renderProfileSelect();
     renderSections();
@@ -4629,12 +4667,15 @@
     // Move localStorage data
     const oldProg = safeGet(progressKey(activeProfile));
     const oldNotes = safeGet(notesKey(activeProfile));
+    const oldCompanions = safeGet(companionsKey(activeProfile));
     const oldSplits = safeGet(splitsKey(activeProfile));
     if (oldProg) safeSet(progressKey(name), oldProg);
     if (oldNotes) safeSet(notesKey(name), oldNotes);
+    if (oldCompanions) safeSet(companionsKey(name), oldCompanions);
     if (oldSplits) safeSet(splitsKey(name), oldSplits);
     try { localStorage.removeItem(progressKey(activeProfile)); } catch (e) {}
     try { localStorage.removeItem(notesKey(activeProfile)); } catch (e) {}
+    try { localStorage.removeItem(companionsKey(activeProfile)); } catch (e) {}
     try { localStorage.removeItem(splitsKey(activeProfile)); } catch (e) {}
     profiles = profiles.map(p => p === activeProfile ? name : p);
     saveProfileList();
@@ -4648,6 +4689,7 @@
     if (!confirm(`Delete profile "${activeProfile}" and all its data? This cannot be undone.`)) return;
     try { localStorage.removeItem(progressKey(activeProfile)); } catch (e) {}
     try { localStorage.removeItem(notesKey(activeProfile)); } catch (e) {}
+    try { localStorage.removeItem(companionsKey(activeProfile)); } catch (e) {}
     try { localStorage.removeItem(splitsKey(activeProfile)); } catch (e) {}
     profiles = profiles.filter(p => p !== activeProfile);
     saveProfileList();
@@ -4656,6 +4698,7 @@
     progress = loadProgressForActive();
     planned = loadPlannedForActive();
     notes = loadNotesForActive();
+    companions = loadCompanionsForActive();
     splits = loadSplitsForActive();
     pack = loadPackForActive();
     {
@@ -4690,6 +4733,7 @@
       const prog = safeGet(progressKey(name));
       const pl = safeGet(plannedKey(name));
       const nt = safeGet(notesKey(name));
+      const cp = safeGet(companionsKey(name));
       const tr = safeGet(tripsKey(name));
       const pk = safeGet(packKey(name));
       const sp = safeGet(splitsKey(name));
@@ -4697,6 +4741,7 @@
         hiked: prog ? safeJsonParse(prog, {}) : {},
         planned: pl ? safeJsonParse(pl, []) : [],
         notes: nt ? safeJsonParse(nt, {}) : {},
+        companions: cp ? safeJsonParse(cp, {}) : {},
         trips: tr ? safeJsonParse(tr, { trips: [], activeTripId: null }) : { trips: [], activeTripId: null },
         pack: pk ? safeJsonParse(pk, { items: [] }) : { items: [] },
         splits: sp ? safeJsonParse(sp, {}) : {},
@@ -4727,6 +4772,7 @@
         if (pdata.hiked) safeSet(progressKey(name), JSON.stringify(pdata.hiked));
         if (pdata.planned) safeSet(plannedKey(name), JSON.stringify(pdata.planned));
         if (pdata.notes) safeSet(notesKey(name), JSON.stringify(pdata.notes));
+        if (pdata.companions) safeSet(companionsKey(name), JSON.stringify(pdata.companions));
         if (pdata.trips) safeSet(tripsKey(name), JSON.stringify(pdata.trips));
         if (pdata.pack) safeSet(packKey(name), JSON.stringify(pdata.pack));
         if (pdata.splits) safeSet(splitsKey(name), JSON.stringify(pdata.splits));
@@ -4744,6 +4790,7 @@
       progress = loadProgressForActive();
       planned = loadPlannedForActive();
       notes = loadNotesForActive();
+      companions = loadCompanionsForActive();
       splits = loadSplitsForActive();
       pack = loadPackForActive();
       const td = loadTripsForActive();
@@ -4839,6 +4886,7 @@
       planned: [...planned],
       trips: { trips, activeTripId },
       notes: Object.fromEntries([...notes].filter(([, v]) => v)),
+      companions: Object.fromEntries([...companions].filter(([, v]) => v)),
       pack: pack && pack.items ? { items: pack.items } : null,
       splits: splits.size ? Object.fromEntries(splits) : null,
     };
@@ -4877,6 +4925,9 @@
     progress = new Map(Object.entries(obj.hiked || {}).map(([k, v]) => [Number(k), String(v || "")]));
     planned = new Set((obj.planned || []).map(Number));
     notes = new Map(Object.entries(obj.notes || {}).map(([k, v]) => [Number(k), String(v || "")]));
+    // Companions (backup version 4+). Older backups lack it — start empty
+    // for this profile rather than carrying the previous one's company.
+    companions = new Map(Object.entries(obj.companions || {}).map(([k, v]) => [Number(k), String(v || "")]));
     if (obj.trips && Array.isArray(obj.trips.trips)) {
       trips = obj.trips.trips;
       activeTripId = obj.trips.activeTripId || (trips[0] && trips[0].id) || null;
@@ -4915,6 +4966,7 @@
     }
     saveProgress();
     saveNotes();
+    saveCompanions();
     renderProfileSelect();
     renderSections();
     updateStats();
@@ -4924,6 +4976,7 @@
       `${planned.size} planned`,
       `${notes.size} notes`,
     ];
+    if (companions.size > 0) parts.push(`${companions.size} companions`);
     if (splitsRestored > 0) parts.push(`${splitsRestored} partial`);
     if (packRestored > 0) parts.push(`${packRestored} pack items`);
     const counts = parts.join(" · ");
@@ -5347,6 +5400,7 @@
     progress = loadProgressForActive();
     planned = loadPlannedForActive();
     notes = loadNotesForActive();
+    companions = loadCompanionsForActive();
     splits = loadSplitsForActive();
     pack = loadPackForActive();
     {

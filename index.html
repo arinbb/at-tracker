@@ -308,6 +308,10 @@
     font-family: inherit;
   }
   .seg .notes-row textarea::placeholder { color: #b3ada3; font-style: italic; }
+  /* Companions field — same control, a subtle accent edge so the two
+     stacked fields read as distinct prompts. */
+  .seg .companions-row { margin-top: 4px; }
+  .seg .companions-row textarea { border-left: 3px solid var(--plan); }
 
   /* Lore: read-only local-history snippet, only shown when present */
   .seg .lore-btn {
@@ -1986,6 +1990,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=64"></script>
+<script src="app.js?v=65"></script>
 </body>
 </html>
