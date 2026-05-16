@@ -694,6 +694,36 @@
   function getActiveTrip() {
     return trips.find((t) => t.id === activeTripId) || null;
   }
+  // Hiking direction for the active trip. Native segment id order runs
+  // south→north (Springer → Katahdin = NOBO). A trip may override the
+  // global default so a single plan can be flipped without changing the
+  // app-wide setting. Returns "nobo" | "sobo".
+  function tripDirection() {
+    const t = getActiveTrip();
+    if (t && (t.dir === "nobo" || t.dir === "sobo")) return t.dir;
+    return prefs.direction === "sobo" ? "sobo" : "nobo";
+  }
+  // The planned sections in TRAVEL order for the active trip. For a
+  // southbound trip the list is reversed and each section's from/to and
+  // geometry are flipped so the itinerary, schematic and checklist all
+  // read in the direction actually being hiked.
+  function buildPlannedSegs() {
+    const segs = [...planned]
+      .filter((id) => !progress.has(id))
+      .map((id) => segIndex.get(id))
+      .filter(Boolean)
+      .sort((a, b) => a.id - b.id);
+    if (tripDirection() !== "sobo") return segs;
+    return segs
+      .slice()
+      .reverse()
+      .map((s) => ({
+        ...s,
+        from: s.to,
+        to: s.from,
+        geom: Array.isArray(s.geom) ? [...s.geom].slice().reverse() : s.geom,
+      }));
+  }
   function ensureActiveTrip() {
     let t = getActiveTrip();
     if (t) return t;
@@ -2862,11 +2892,7 @@
     return bits.length ? ` <small style="color:var(--muted);">${bits.join(" · ")}</small>` : "";
   }
   function renderPlannedSummary() {
-    const plannedSegs = [...planned]
-      .filter((id) => !progress.has(id))
-      .map((id) => segIndex.get(id))
-      .filter(Boolean)
-      .sort((a, b) => a.id - b.id);
+    const plannedSegs = buildPlannedSegs();
 
     const totalMi = plannedSegs.reduce((a, s) => a + s.miles, 0);
     const states = [...new Set(plannedSegs.map((s) => s.state))];
@@ -2928,6 +2954,11 @@
         html.push(`<button id="trip-rename" title="Rename current trip">✎</button>`);
         html.push(`<button id="trip-delete" title="Delete current trip">✕</button>`);
       }
+      const dir = tripDirection();
+      html.push(`<label class="trip-dir-wrap" title="Which way you're hiking this trip — overrides the app default for the plan, itinerary, and printout">Direction: <select id="trip-dir">` +
+        `<option value="nobo"${dir === "nobo" ? " selected" : ""}>Northbound ↑ (GA → ME)</option>` +
+        `<option value="sobo"${dir === "sobo" ? " selected" : ""}>Southbound ↓ (ME → GA)</option>` +
+        `</select></label>`);
       html.push(`</div>`);
     }
     // Defined here so they're in scope for the post-render initial itinerary
@@ -3084,6 +3115,11 @@
     // Wire trip selector + actions (newly rendered)
     $("trip-select")?.addEventListener("change", (e) => {
       switchTrip(e.target.value);
+      renderPlannedSummary();
+    });
+    $("trip-dir")?.addEventListener("change", (e) => {
+      const t = ensureActiveTrip();
+      if (t) { t.dir = e.target.value === "sobo" ? "sobo" : "nobo"; saveTrips(); }
       renderPlannedSummary();
     });
     $("trip-new")?.addEventListener("click", () => {
@@ -3672,25 +3708,29 @@
   // section boundaries (shelters / road crossings / gaps) merged with
   // FEATURES (peaks, views, towns, water, …), each with a checkbox.
   function buildWaypointChecklist(plannedSegs) {
+    // Walk the route in travel order, accumulating a trip-relative mile
+    // (0 at the start of the hike) so the list reads correctly for both
+    // northbound and southbound trips. Features are placed within their
+    // section by interpolated position, flipped for southbound.
+    const sobo = tripDirection() === "sobo";
     const rows = [];
+    let tripMi = 0;
     for (const s of plannedSegs) {
-      const startMi = segCumulative.get(s.id) || 0;
-      const bf = breakpointKind(s.from), bt = breakpointKind(s.to);
-      rows.push({ name: s.from, mile: startMi, icon: bf.icon });
-      rows.push({ name: s.to, mile: startMi + s.miles, icon: bt.icon });
+      const gStart = segCumulative.get(s.id) || 0;
+      const segMi = s.miles || 0;
+      rows.push({ name: s.from, mile: tripMi, icon: breakpointKind(s.from).icon });
+      const segFeats = (segFeatures.get(s.id) || []).map((f) => {
+        const fm = typeof f._mile === "number" ? f._mile : gStart;
+        let frac = segMi > 0 ? (fm - gStart) / segMi : 0;
+        if (sobo) frac = 1 - frac;
+        frac = Math.max(0, Math.min(1, frac));
+        return { name: f.name, mile: tripMi + frac * segMi, icon: featureKindIcon(f.kind) };
+      }).sort((a, b) => a.mile - b.mile);
+      for (const r of segFeats) rows.push(r);
+      tripMi += segMi;
+      rows.push({ name: s.to, mile: tripMi, icon: breakpointKind(s.to).icon });
     }
-    const featureBuckets = collectPlannedFeatures(plannedSegs);
-    for (const kind in featureBuckets) {
-      for (const f of featureBuckets[kind]) {
-        rows.push({
-          name: f.name,
-          mile: typeof f._mile === "number" ? f._mile : 0,
-          icon: featureKindIcon(kind),
-        });
-      }
-    }
-    rows.sort((a, b) => a.mile - b.mile);
-    // De-dup by name, keeping the earliest mile.
+    // De-dup by name, keeping the first (earliest in travel order) hit.
     const seen = new Set();
     const out = [];
     for (const r of rows) {
@@ -3711,11 +3751,7 @@
   }
   let _printMapHome = null; // {parent, next} so we can put #map back
   function buildPlannedPrintExtras() {
-    const plannedSegs = [...planned]
-      .filter((id) => !progress.has(id))
-      .map((id) => segIndex.get(id))
-      .filter(Boolean)
-      .sort((a, b) => a.id - b.id);
+    const plannedSegs = buildPlannedSegs();
     if (plannedSegs.length === 0) return null;
     const wrap = document.createElement("div");
     wrap.id = "planned-print-extras";
@@ -3817,11 +3853,7 @@
     return `${location.origin}${location.pathname}#${params.toString()}`;
   }
   function openSharePlan() {
-    const plannedSegs = [...planned]
-      .filter((id) => !progress.has(id))
-      .map((id) => segIndex.get(id))
-      .filter(Boolean)
-      .sort((a, b) => a.id - b.id);
+    const plannedSegs = buildPlannedSegs();
     if (plannedSegs.length === 0) { alert("No planned segments to share."); return; }
     const pace = Math.max(1, Math.min(50, Number(prefs.pace) || 12));
     const startDate = prefs.tripStartDate || todayISO();
