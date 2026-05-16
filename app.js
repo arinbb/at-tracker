@@ -899,10 +899,51 @@
       attribution: 'Map data © <a href="https://www.openstreetmap.org/copyright">OSM</a>, ' +
         'tiles © <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)',
     });
+    // Esri World Imagery — aerial/satellite. Free, no key; attribution
+    // required. Lets hikers see tree cover, balds, water, trailheads.
+    const sat = L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      {
+        maxZoom: 19,
+        attribution: 'Imagery © <a href="https://www.esri.com">Esri</a>, Maxar, Earthstar Geographics',
+      }
+    );
+    // USGS The National Map — public-domain, US-only (perfect for the AT),
+    // no key. Topo quads and an imagery+contours hybrid.
+    const usgsTopo = L.tileLayer(
+      "https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}",
+      {
+        maxZoom: 16,
+        attribution: 'Tiles courtesy of the <a href="https://www.usgs.gov/">U.S. Geological Survey</a>',
+      }
+    );
+    const usgsImageryTopo = L.tileLayer(
+      "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryTopo/MapServer/tile/{z}/{y}/{x}",
+      {
+        maxZoom: 16,
+        attribution: 'Tiles courtesy of the <a href="https://www.usgs.gov/">U.S. Geological Survey</a>',
+      }
+    );
+    // Waymarked Trails — hiking overlay (marked/blazed trail networks).
+    // Transparent, sits on top of any base layer.
+    const hikingOverlay = L.tileLayer(
+      "https://tile.waymarkedtrails.org/hiking/{z}/{x}/{y}.png",
+      {
+        maxZoom: 18,
+        opacity: 0.7,
+        attribution: '© <a href="https://waymarkedtrails.org">Waymarked Trails</a> (CC-BY-SA)',
+      }
+    );
     osm.addTo(map);
     layerControl = L.control.layers(
-      { "OpenStreetMap": osm, "OpenTopoMap (terrain)": topo },
-      null,
+      {
+        "OpenStreetMap": osm,
+        "OpenTopoMap (terrain)": topo,
+        "Satellite (Esri)": sat,
+        "USGS Topo": usgsTopo,
+        "USGS Imagery + Topo": usgsImageryTopo,
+      },
+      { "🥾 Marked trails (Waymarked)": hikingOverlay },
       { position: "topright", collapsed: true }
     ).addTo(map);
 
