@@ -1343,6 +1343,32 @@
     f.source = "curated";
   });
 
+  // Hand-curated campsites that fill an upstream-data gap in the
+  // Pearisburg → Catawba (VA) corridor. Each AT shelter in this stretch
+  // has an associated tenting area within ~50m, but the feed only
+  // tagged the shelter (not its paired campsite), unlike every adjacent
+  // section (e.g. "Wapiti Shelter" + "Wapiti Shelter Campsite"). Coords
+  // come directly from DATA.shelters so they're authoritative — no
+  // fabrication. Same naming convention the feed uses elsewhere.
+  const CURATED_CAMPSITES = [
+    { id: "cs_rice_field",       name: "Rice Field Shelter Campsite",        kind: "campsite", lat: 37.375, lon: -80.758 },
+    { id: "cs_pine_swamp_branch", name: "Pine Swamp Branch Shelter Campsite", kind: "campsite", lat: 37.422, lon: -80.608 },
+    { id: "cs_bailey_gap",       name: "Bailey Gap Shelter Campsite",        kind: "campsite", lat: 37.401, lon: -80.577 },
+    { id: "cs_war_spur",         name: "War Spur Shelter Campsite",          kind: "campsite", lat: 37.398, lon: -80.474 },
+    { id: "cs_laurel_creek",     name: "Laurel Creek Shelter Campsite",      kind: "campsite", lat: 37.359, lon: -80.421 },
+    { id: "cs_sarver_hollow",    name: "Sarver Hollow Shelter Campsite",     kind: "campsite", lat: 37.355, lon: -80.337 },
+    { id: "cs_niday",            name: "Niday Shelter Campsite",             kind: "campsite", lat: 37.388, lon: -80.264 },
+    { id: "cs_johns_spring",     name: "Johns Spring Shelter Campsite",      kind: "campsite", lat: 37.385, lon: -80.074 },
+  ];
+  CURATED_CAMPSITES.forEach((f) => {
+    f.slug = "";
+    f.off = 0;
+    f.off_dir = "";
+    f.state = "Virginia";
+    f.parent_town = "";
+    f.source = "curated";
+  });
+
   // Wikimedia stable-redirect URLs for each US state's flag, scaled to 40px.
   // Special:FilePath redirects to the current thumbnail without needing the
   // unpredictable file hash. Combined states get two flags side by side.
@@ -5756,6 +5782,12 @@
         // (especially the SW VA / Roan / Smokies stretch).
         if (Array.isArray(FEATURES.features) && Array.isArray(CURATED_VIEWS)) {
           FEATURES.features.push(...CURATED_VIEWS);
+        }
+        // Append hand-curated campsites filling the Pearisburg → Catawba
+        // (VA) gap where the feed only tagged shelters, not their
+        // paired tenting areas.
+        if (Array.isArray(FEATURES.features) && Array.isArray(CURATED_CAMPSITES)) {
+          FEATURES.features.push(...CURATED_CAMPSITES);
         }
         matchFeaturesToSegments();
         buildFeatureLayers();
