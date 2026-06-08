@@ -1161,7 +1161,11 @@
     <div id="loading">Loading AT trail data…</div>
     <div id="sections"></div>
   </aside>
-  <div id="map"></div>
+  <div id="map">
+    <!-- Floating banner that appears above the map while the user is
+         picking two points to record a previous trip from the map. -->
+    <div id="map-trip-banner" role="status" style="display:none;"></div>
+  </div>
 </main>
 
 <div class="modal-bg" id="share-modal" style="z-index: 1050;">
@@ -1349,6 +1353,26 @@
   /* The header gets a "search" button, but a keyboard shortcut also opens the overlay */
 </style>
 
+<!-- Map-trip confirmation: shown after the user taps two points on the
+     map. Lets them name + date the trip before it's recorded. -->
+<div class="modal-bg" id="map-trip-modal" style="z-index: 1050;">
+  <div class="modal" style="max-width: 520px;">
+    <h2>🗺 Add this hike</h2>
+    <p style="font-size: 12px; color: var(--muted); margin: 0 0 10px;">Here's what your two taps cover. Adjust the name or date if you need to, then save.</p>
+    <div id="map-trip-preview" style="font-size: 13px; padding: 10px; background: var(--panel-alt); border: 1px solid var(--rule); border-radius: 6px; margin-bottom: 12px;"></div>
+    <label style="display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); margin-bottom: 8px;">
+      Trip name<input type="text" id="map-trip-name" maxlength="80" style="font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--rule); border-radius: 4px; background: var(--input-bg); color: var(--ink);" />
+    </label>
+    <label style="display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted);">
+      Date hiked<input type="date" id="map-trip-date" style="font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--rule); border-radius: 4px; background: var(--input-bg); color: var(--ink); color-scheme: light dark; width: 180px;" />
+    </label>
+    <div class="modal-actions">
+      <button id="map-trip-cancel-modal">Cancel</button>
+      <button id="map-trip-save" class="primary">Save trip</button>
+    </div>
+  </div>
+</div>
+
 <!-- Trips (completed) — separate top-level view of every plan you've
      actually finished. The Hike Planner only shows in-progress plans;
      this modal is the history. -->
@@ -1356,6 +1380,9 @@
   <div class="modal" style="max-width: 760px;">
     <h2>🏕 Trips <small id="trips-modal-count" style="font-size: 12px; color: var(--muted); font-weight: 400;"></small></h2>
     <p style="font-size: 12px; color: var(--muted); margin: 0 0 12px;">Plans you've completed. Each card is one finished trip — edit the date or name, reopen as a plan if it isn't really done, or delete the record (this won't unmark any sections as hiked).</p>
+    <div style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;">
+      <button type="button" id="trips-add-from-map" title="Tap two points on the map to record a hike that already happened">🗺 Add a hike from the map…</button>
+    </div>
     <div id="trips-modal-body" class="trips-manager-body"></div>
     <div class="modal-actions">
       <button id="trips-modal-close" class="primary">Done</button>
@@ -1465,6 +1492,32 @@
   #planned-body .trip-actions { display: flex; gap: 6px; flex-wrap: wrap; }
   #planned-modal h2#planned-title { font-size: 19px; }
   #planned-modal #planned-trip-name { color: var(--accent); }
+
+  /* ===== Map-trip pick mode (click two points to record a hike) ===== */
+  #map { position: relative; }
+  #map-trip-banner {
+    position: absolute;
+    top: 10px; left: 50%;
+    transform: translateX(-50%);
+    z-index: 800;
+    display: flex; align-items: center; gap: 12px;
+    background: var(--accent); color: #fff;
+    font-size: 13px; font-weight: 600;
+    padding: 8px 14px;
+    border-radius: 999px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+    max-width: calc(100% - 24px);
+  }
+  body.map-trip-pick .leaflet-container { cursor: crosshair; }
+  .map-trip-marker { background: transparent; border: none; }
+  .map-trip-marker-dot {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--accent); color: #fff;
+    font-weight: 700; font-size: 12px;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.4), 0 0 0 2px #fff;
+  }
 
   /* ===== Trips manager modal ===== */
   .trips-manager-body { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow-y: auto; padding-right: 4px; }
@@ -2363,6 +2416,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=83"></script>
+<script src="app.js?v=84"></script>
 </body>
 </html>

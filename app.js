@@ -92,6 +92,11 @@
   let profiles = [DEFAULT_PROFILE];
   let activeProfile = DEFAULT_PROFILE;
   let map = null;
+  // Map-pick "add a trip by clicking two points on the map" state.
+  let mapTripPickActive = false;
+  let mapTripSnapA = null; // first-click snap
+  let mapTripMarkerA = null; // L.marker placed at first click
+  let mapTripMarkerB = null;
   let segLayers = new Map();
   // Green overlay polylines for the hiked portion of partial segments,
   // drawn on top of the (unhiked-styled) base segment line.
@@ -995,6 +1000,10 @@
       const k = e.layer && e.layer._atOv;
       if (k) { (prefs.mapOverlays = prefs.mapOverlays || {})[k] = false; savePrefs(); }
     });
+    // "Add a trip by clicking the map" pick mode. Only handles map
+    // clicks when explicitly active; otherwise the map's normal click
+    // behavior (deselect, route info, etc.) runs.
+    map.on("click", onMapTripClick);
 
     // Custom map legend control
     function injectLayerToggleAll() {
@@ -1192,6 +1201,290 @@
       pts.push([geom[i][1], geom[i][0]]);
     }
     return pts;
+  }
+  // Snap a click latlng to the nearest point on the AT polyline.
+  // Returns { segId, atMi, distMi, lat, lon } or null. distMi is the
+  // perpendicular distance from the click to the trail — useful to
+  // reject clicks far from the trail (drag operations, mis-taps).
+  function snapClickToTrail(latlng) {
+    if (!latlng || !DATA || !Array.isArray(DATA.segments)) return null;
+    const lat = latlng.lat, lng = latlng.lng;
+    const KM_PER_MI = 1.609344;
+    let best = null;
+    for (const seg of DATA.segments) {
+      if (!seg.geom || seg.geom.length < 2) continue;
+      let accMi = 0;
+      for (let i = 1; i < seg.geom.length; i++) {
+        const lon1 = seg.geom[i - 1][0], lat1 = seg.geom[i - 1][1];
+        const lon2 = seg.geom[i][0],     lat2 = seg.geom[i][1];
+        const dx = lon2 - lon1, dy = lat2 - lat1;
+        const len2 = dx * dx + dy * dy;
+        let t = 0;
+        if (len2 > 0) {
+          t = ((lng - lon1) * dx + (lat - lat1) * dy) / len2;
+          t = Math.max(0, Math.min(1, t));
+        }
+        const px = lon1 + t * dx, py = lat1 + t * dy;
+        const meanLat = (lat + py) * 0.5 * Math.PI / 180;
+        const ex = (lng - px) * 111.32 * Math.cos(meanLat);
+        const ey = (lat - py) * 110.574;
+        const distMi = Math.sqrt(ex * ex + ey * ey) / KM_PER_MI;
+        const edgeLenMi = _havKm([lon1, lat1], [lon2, lat2]) / KM_PER_MI;
+        if (best === null || distMi < best.distMi) {
+          best = { segId: seg.id, atMi: accMi + t * edgeLenMi, distMi, lat: py, lon: px };
+        }
+        accMi += edgeLenMi;
+      }
+    }
+    return best;
+  }
+  // If the snap point lands within `tolMi` of a section endpoint or a
+  // known landmark (shelter / road crossing on this segment), promote
+  // the snap to that boundary. Keeps trips that started "at the shelter"
+  // from creating tiny partials due to GPS-tap imprecision.
+  function promoteSnapToBoundary(snap, tolMi = 0.3) {
+    if (!snap) return snap;
+    const seg = segIndex.get(snap.segId);
+    if (!seg) return snap;
+    // Endpoint snap
+    if (snap.atMi <= tolMi) return { ...snap, atMi: 0, promoted: "start" };
+    if (snap.atMi >= seg.miles - tolMi) return { ...snap, atMi: seg.miles, promoted: "end" };
+    // Landmark snap (shelters and crossings that lie along this seg)
+    const cands = splitCandidates(seg);
+    let bestCand = null, bestD = tolMi;
+    for (const c of cands) {
+      const d = Math.abs(c.atMi - snap.atMi);
+      if (d < bestD) { bestD = d; bestCand = c; }
+    }
+    if (bestCand) return { ...snap, atMi: bestCand.atMi, promoted: bestCand.label };
+    return snap;
+  }
+  // Compute the trip route between two snapped points, in trail order.
+  // Returns { from, to, miles, sectionsFull, sectionsPartial } where
+  // sectionsPartial entries describe range-partial splits to record.
+  function computeMapTripRoute(snapA, snapB) {
+    if (!snapA || !snapB) return null;
+    const segA = segIndex.get(snapA.segId);
+    const segB = segIndex.get(snapB.segId);
+    if (!segA || !segB) return null;
+    // Order: earlier trail mile is "from".
+    const mileA = (segCumulative.get(segA.id) || 0) + snapA.atMi;
+    const mileB = (segCumulative.get(segB.id) || 0) + snapB.atMi;
+    const [first, second, snapFirst, snapSecond] = mileA <= mileB
+      ? [segA, segB, snapA, snapB]
+      : [segB, segA, snapB, snapA];
+    const startMile = Math.min(mileA, mileB);
+    const endMile = Math.max(mileA, mileB);
+    const totalMi = endMile - startMile;
+    const sectionsFull = []; // ids fully hiked
+    const sectionsPartial = []; // {segId, atMi, rev}
+    const tol = 0.05; // call it "fully hiked" if within ~250 ft of the boundary
+    // Same section: either snap covers the whole thing or it's a tiny piece.
+    if (first.id === second.id) {
+      const lo = snapFirst.atMi, hi = snapSecond.atMi;
+      // If both ends are near opposite section endpoints, mark full
+      if (lo <= tol && hi >= first.miles - tol) sectionsFull.push(first.id);
+      else {
+        // Anchor partial at whichever end is closer to a boundary so the
+        // existing rev/atMi model represents [lo,hi] losslessly when
+        // exactly one end touches a boundary; otherwise approximate by
+        // taking the longest single-anchor cover.
+        if (lo <= tol) sectionsPartial.push({ segId: first.id, atMi: hi, rev: false });
+        else if (hi >= first.miles - tol) sectionsPartial.push({ segId: first.id, atMi: first.miles - lo, rev: true });
+        else {
+          // True interior range; existing model can't store it exactly.
+          // Approximate as a forward partial up to hi — covers the bigger
+          // piece (most users start near a boundary anyway).
+          sectionsPartial.push({ segId: first.id, atMi: hi, rev: false });
+        }
+      }
+      return { from: snapFirst, to: snapSecond, miles: totalMi, sectionsFull, sectionsPartial };
+    }
+    // Different sections: handle start boundary, middle, end boundary.
+    // start boundary
+    if (snapFirst.atMi <= tol) sectionsFull.push(first.id);
+    else if (snapFirst.atMi >= first.miles - tol) {
+      // started right at the end → don't include first; it's just the boundary
+    } else {
+      // Back half of `first`: from snapFirst.atMi to first.miles
+      sectionsPartial.push({ segId: first.id, atMi: first.miles - snapFirst.atMi, rev: true });
+    }
+    // middle (strictly between first.id and second.id)
+    const ordered = [...DATA.segments].sort((a, b) => a.id - b.id);
+    const iStart = ordered.findIndex((s) => s.id === first.id);
+    const iEnd = ordered.findIndex((s) => s.id === second.id);
+    for (let k = iStart + 1; k < iEnd; k++) sectionsFull.push(ordered[k].id);
+    // end boundary
+    if (snapSecond.atMi >= second.miles - tol) sectionsFull.push(second.id);
+    else if (snapSecond.atMi <= tol) {
+      // ended right at the start → boundary only
+    } else {
+      // Front half of `second`: from 0 to snapSecond.atMi
+      sectionsPartial.push({ segId: second.id, atMi: snapSecond.atMi, rev: false });
+    }
+    return { from: snapFirst, to: snapSecond, miles: totalMi, sectionsFull, sectionsPartial };
+  }
+  // ---- Map-trip pick mode + confirmation flow ----
+  function _mapTripMarker(latlng, label) {
+    return L.marker(latlng, {
+      icon: L.divIcon({
+        className: "map-trip-marker",
+        html: `<div class="map-trip-marker-dot">${escapeHtml(label)}</div>`,
+        iconSize: [22, 22],
+        iconAnchor: [11, 11],
+      }),
+      interactive: false,
+    });
+  }
+  function startMapTripPick() {
+    // Close any open major modal so the map is visible.
+    ["planned-modal", "pack-modal", "stats-modal", "settings-modal", "trips-modal", "trips-manager-modal"]
+      .forEach((id) => $(id)?.classList.remove("show"));
+    // On mobile the map might be under the List tab; switch to map view.
+    const mapSub = [...document.querySelectorAll("[data-mtab]")].find((b) => b.dataset.mtab === "map");
+    mapSub?.click();
+    cancelMapTripPick(true); // clean any prior state silently
+    mapTripPickActive = true;
+    document.body.classList.add("map-trip-pick");
+    updateMapTripBanner("Tap on the map where your hike started.");
+  }
+  function cancelMapTripPick(silent) {
+    mapTripPickActive = false;
+    document.body.classList.remove("map-trip-pick");
+    if (mapTripMarkerA && map) { try { map.removeLayer(mapTripMarkerA); } catch (e) {} }
+    if (mapTripMarkerB && map) { try { map.removeLayer(mapTripMarkerB); } catch (e) {} }
+    mapTripMarkerA = null;
+    mapTripMarkerB = null;
+    mapTripSnapA = null;
+    if (!silent) updateMapTripBanner("");
+  }
+  function updateMapTripBanner(text) {
+    const el = $("map-trip-banner");
+    if (!el) return;
+    if (!text) { el.style.display = "none"; el.textContent = ""; return; }
+    el.style.display = "block";
+    el.innerHTML = `<span>${text}</span>` +
+      `<button type="button" id="map-trip-cancel" style="margin-left:auto;font:inherit;font-size:11px;padding:2px 8px;border:1px solid var(--rule);border-radius:4px;background:transparent;color:inherit;cursor:pointer;">Cancel</button>`;
+    $("map-trip-cancel")?.addEventListener("click", () => cancelMapTripPick(false));
+  }
+  function onMapTripClick(e) {
+    if (!mapTripPickActive) return;
+    const raw = snapClickToTrail(e.latlng);
+    if (!raw) return;
+    if (raw.distMi > 0.6) {
+      updateMapTripBanner(`That tap was ~${raw.distMi.toFixed(2)} mi off the trail — try clicking closer to the AT line.`);
+      return;
+    }
+    const snap = promoteSnapToBoundary(raw);
+    if (mapTripSnapA === null) {
+      mapTripSnapA = snap;
+      mapTripMarkerA = _mapTripMarker([snap.lat, snap.lon], "A").addTo(map);
+      updateMapTripBanner("Got the start. Now tap where you ended.");
+      return;
+    }
+    // Second click: build the route + open the confirmation modal.
+    const route = computeMapTripRoute(mapTripSnapA, snap);
+    mapTripMarkerB = _mapTripMarker([snap.lat, snap.lon], "B").addTo(map);
+    if (!route || (route.sectionsFull.length === 0 && route.sectionsPartial.length === 0)) {
+      updateMapTripBanner("Those two points landed on the same spot. Try again.");
+      cancelMapTripPick(false);
+      return;
+    }
+    openMapTripConfirm(route);
+  }
+  function _mapTripDefaultName(route) {
+    const a = segIndex.get(route.from.segId);
+    const b = segIndex.get(route.to.segId);
+    if (!a || !b) return "Trip";
+    const startName = route.from.promoted && route.from.promoted !== "start" && route.from.promoted !== "end"
+      ? route.from.promoted
+      : (route.from.atMi <= 0.05 ? a.from : (route.from.atMi >= a.miles - 0.05 ? a.to : a.from));
+    const endName = route.to.promoted && route.to.promoted !== "start" && route.to.promoted !== "end"
+      ? route.to.promoted
+      : (route.to.atMi >= b.miles - 0.05 ? b.to : (route.to.atMi <= 0.05 ? b.from : b.to));
+    return `${startName} → ${endName}`;
+  }
+  function openMapTripConfirm(route) {
+    const a = segIndex.get(route.from.segId);
+    const b = segIndex.get(route.to.segId);
+    const startName = (route.from.promoted && typeof route.from.promoted === "string" && route.from.promoted !== "start" && route.from.promoted !== "end")
+      ? route.from.promoted
+      : `${a.from} → ${a.to}`;
+    const endName = (route.to.promoted && typeof route.to.promoted === "string" && route.to.promoted !== "start" && route.to.promoted !== "end")
+      ? route.to.promoted
+      : `${b.from} → ${b.to}`;
+    const partialMi = route.sectionsPartial.reduce((acc, p) => acc + p.atMi, 0);
+    const fullMi = route.miles - partialMi;
+    $("map-trip-preview").innerHTML =
+      `<div><strong>From:</strong> ${escapeHtml(startName)}</div>` +
+      `<div><strong>To:</strong> ${escapeHtml(endName)}</div>` +
+      `<div style="margin-top:6px;"><strong>${route.miles.toFixed(1)} mi</strong> · ` +
+      `${route.sectionsFull.length} section${route.sectionsFull.length === 1 ? "" : "s"} fully hiked` +
+      (route.sectionsPartial.length > 0 ? ` · ${route.sectionsPartial.length} partial (${partialMi.toFixed(1)} mi of partial)` : "") +
+      `</div>`;
+    $("map-trip-name").value = _mapTripDefaultName(route);
+    $("map-trip-date").value = todayISO();
+    $("map-trip-date").max = todayISO();
+    // Stash the computed route on the modal so Save can apply it.
+    $("map-trip-modal").dataset.route = JSON.stringify(route);
+    $("map-trip-modal").classList.add("show");
+  }
+  function closeMapTripConfirm() {
+    $("map-trip-modal")?.classList.remove("show");
+  }
+  function applyMapTripConfirm() {
+    const modal = $("map-trip-modal");
+    let route;
+    try { route = JSON.parse(modal.dataset.route || "null"); } catch (e) { return; }
+    if (!route) return;
+    const name = ($("map-trip-name").value || "").trim() || "Trip";
+    const date = $("map-trip-date").value || todayISO();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { alert("Use a valid date (YYYY-MM-DD)."); return; }
+    // Apply progress + splits
+    let stamped = 0, splitsCreated = 0;
+    for (const id of route.sectionsFull) {
+      if (!progress.has(id)) { progress.set(id, date); stamped++; }
+      // Clear any partial for this id since it's now fully hiked.
+      if (splits.has(id)) splits.delete(id);
+    }
+    for (const p of route.sectionsPartial) {
+      // Don't downgrade a fully-hiked section to partial.
+      if (progress.has(p.segId)) continue;
+      const seg = segIndex.get(p.segId);
+      if (!seg) continue;
+      const atMi = Math.max(0.05, Math.min(seg.miles - 0.05, p.atMi));
+      splits.set(p.segId, { atMi, rev: !!p.rev, label: "", date });
+      splitsCreated++;
+    }
+    // Create the completed trip
+    const segs = [...new Set([...route.sectionsFull, ...route.sectionsPartial.map((p) => p.segId)])].sort((a, b) => a - b);
+    const trip = {
+      id: "trip-" + Date.now(),
+      name,
+      createdAt: Date.now(),
+      segs,
+      dir: "nobo",
+      status: "completed",
+      completedAt: date,
+      source: "map-pick",
+    };
+    trips.push(trip);
+    saveTrips();
+    saveProgress();
+    saveSplits();
+    renderSections();
+    updateStats();
+    refreshMapStyles();
+    closeMapTripConfirm();
+    cancelMapTripPick(false);
+    // If the user came from the Trips view, refresh it.
+    renderTripsList();
+    renderPlannedSummary();
+    // Friendly confirmation toast — show count of changes
+    const parts = [];
+    if (stamped > 0) parts.push(`${stamped} section${stamped === 1 ? "" : "s"} marked hiked`);
+    if (splitsCreated > 0) parts.push(`${splitsCreated} partial${splitsCreated === 1 ? "" : "s"} recorded`);
+    alert(`Saved "${name}" — ${parts.join(", ") || "trip added"}.`);
   }
   function drawSegmentsOnMap() {
     const bounds = L.latLngBounds([]);
@@ -6656,6 +6949,12 @@
     $("trips-modal-body")?.addEventListener("click", handleTripsManagerAction);
     $("trips-modal-body")?.addEventListener("change", handleTripsManagerChange);
     $("trips-modal-body")?.addEventListener("blur", handleTripsManagerChange, true);
+    $("trips-add-from-map")?.addEventListener("click", startMapTripPick);
+    $("map-trip-cancel-modal")?.addEventListener("click", () => {
+      closeMapTripConfirm();
+      cancelMapTripPick(false);
+    });
+    $("map-trip-save")?.addEventListener("click", applyMapTripConfirm);
     $("pack-transfer-apply")?.addEventListener("click", applyPackTransfer);
     $("pack-transfer-from")?.addEventListener("change", () => renderPackTransferItems());
     $("pack-transfer-select-all")?.addEventListener("change", (e) => {
