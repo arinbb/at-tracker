@@ -2452,7 +2452,9 @@
       if (curMi > bestRunMi) { bestRunMi = curMi; bestRunCount = curCount; }
     }
 
-    // Per-date stats (= trips)
+    // Per-date stats (= trips). Includes partial-section miles too so
+    // a day with two boundary-partial taps from a map-pick trip still
+    // shows up here with the correct hiked mileage.
     const byDate = new Map();
     for (const [id, date] of progress) {
       const seg = segIndex.get(id);
@@ -2462,6 +2464,17 @@
       const e = byDate.get(key);
       e.mi += seg.miles;
       e.count++;
+    }
+    for (const [id, sp] of splits) {
+      if (progress.has(id)) continue; // fully-hiked supersedes; already counted
+      const seg = segIndex.get(id);
+      if (!seg) continue;
+      const key = sp.date || "";
+      if (!byDate.has(key)) byDate.set(key, { mi: 0, count: 0 });
+      const e = byDate.get(key);
+      e.mi += Math.min(seg.miles, Math.max(0, sp.atMi || 0));
+      // Don't bump count — section isn't fully done, so it shouldn't
+      // boost the trip's "sections completed" tally.
     }
     const tripMiles = [...byDate.entries()].filter(([k]) => k).map(([, v]) => v.mi).sort((a, b) => a - b);
     const meanTrip = tripMiles.length ? tripMiles.reduce((a, b) => a + b, 0) / tripMiles.length : 0;
@@ -2473,7 +2486,8 @@
     const longestTrip = tripMiles.length ? tripMiles[tripMiles.length - 1] : 0;
     const hikeDays = byDate.size - (byDate.has("") ? 1 : 0);
 
-    // Year breakdown
+    // Year breakdown — includes partial-section miles, matching the
+    // headline total and per-date rollups.
     const byYear = new Map();
     for (const [id, date] of progress) {
       const seg = segIndex.get(id);
@@ -2481,6 +2495,14 @@
       const year = date ? date.slice(0, 4) : "(no date)";
       if (!byYear.has(year)) byYear.set(year, 0);
       byYear.set(year, byYear.get(year) + seg.miles);
+    }
+    for (const [id, sp] of splits) {
+      if (progress.has(id)) continue;
+      const seg = segIndex.get(id);
+      if (!seg) continue;
+      const year = sp.date ? sp.date.slice(0, 4) : "(no date)";
+      if (!byYear.has(year)) byYear.set(year, 0);
+      byYear.set(year, byYear.get(year) + Math.min(seg.miles, Math.max(0, sp.atMi || 0)));
     }
     const yearRows = [...byYear.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 
@@ -3737,8 +3759,31 @@
     if (e.target.matches("[data-tm-completed-at]")) {
       const v = e.target.value;
       if (v && /^\d{4}-\d{2}-\d{2}$/.test(v)) {
+        const oldDate = t.completedAt;
         t.completedAt = v;
         saveTrips();
+        // Ripple the date change into the section-level state for
+        // anything that was stamped on the OLD completion date by this
+        // trip. We only touch sections whose current date matches the
+        // old completedAt AND that are in this trip's segs — that way a
+        // section a user manually re-dated (or stamped by a different
+        // trip) is left alone.
+        if (oldDate && oldDate !== v) {
+          const ids = (Array.isArray(t.segs) ? t.segs : []).map(Number).filter(Number.isFinite);
+          let rippled = 0;
+          for (const id of ids) {
+            if (progress.get(id) === oldDate) { progress.set(id, v); rippled++; }
+            const sp = splits.get(id);
+            if (sp && sp.date === oldDate) { splits.set(id, { ...sp, date: v }); rippled++; }
+          }
+          if (rippled > 0) {
+            saveProgress();
+            saveSplits();
+            renderSections();
+            updateStats();
+            refreshMapStyles();
+          }
+        }
         if (e.type === "blur") renderTripsList();
       }
       return;
@@ -6485,6 +6530,9 @@
       if (cov >= COVER_THRESHOLD) {
         if (!progress.has(seg.id)) matched++;
         progress.set(seg.id, date);
+        // Fully-hiked supersedes any prior partial split on this seg —
+        // clear it so the row state stays consistent with toggleSegment.
+        if (splits.has(seg.id)) splits.delete(seg.id);
         touched++;
       }
     }
@@ -6493,6 +6541,7 @@
       return;
     }
     saveProgress();
+    saveSplits();
     renderSections();
     updateStats();
     refreshMapStyles();
