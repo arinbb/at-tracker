@@ -894,9 +894,14 @@
     safeSet(plannedKey(activeProfile), JSON.stringify([...planned]));
     const code = encodeProgress(progress);
     const planCode = encodePlanned(planned);
+    const splitCode = encodeSplits(splits);
     const params = new URLSearchParams();
     if (code) params.set("c", code);
     if (planCode) params.set("pl", planCode);
+    // Partial-progress sections in the URL hash too, so the address bar
+    // is a complete snapshot of "what got hiked" — matching what the
+    // explicit Share URL has carried since splits were added.
+    if (splitCode) params.set("sp", splitCode);
     if (activeProfile !== DEFAULT_PROFILE) params.set("p", activeProfile);
     const hash = params.toString();
     history.replaceState(null, "", hash ? `#${hash}` : location.pathname);
@@ -5816,19 +5821,27 @@
     }
   }
   function doReset() {
-    if (!confirm(`Clear all hiked sections, planned segments, and notes for profile "${activeProfile}"? This cannot be undone (unless you have a saved code).`)) return;
+    if (!confirm(`Clear all hiked sections, partial progress, planned segments, notes, AND saved trips (both in-progress plans and completed trips) for profile "${activeProfile}"? This cannot be undone (unless you have a saved code).`)) return;
     progress = new Map();
     planned = new Set();
     notes = new Map();
     companions = new Map();
     splits = new Map();
+    // Trips are tied to the progress/splits state — keeping them on Reset
+    // produced "zombie" completed trips claiming sections that no longer
+    // show as hiked anywhere. Clear them so the per-profile reset is whole.
+    trips = [];
+    activeTripId = null;
     saveProgress();
     saveNotes();
     saveCompanions();
     saveSplits();
+    saveTrips();
     renderSections();
     updateStats();
     refreshMapStyles();
+    renderPlannedSummary();
+    renderTripsList();
   }
 
   // -------- Profile actions --------
@@ -5845,10 +5858,13 @@
     notes = new Map();
     companions = new Map();
     splits = new Map();
+    trips = [];
+    activeTripId = null;
     saveProgress();
     saveNotes();
     saveCompanions();
     saveSplits();
+    saveTrips();
     renderProfileSelect();
     renderSections();
     updateStats();
