@@ -3181,6 +3181,159 @@
     if (typeof f._mile === "number" && f._mile > 0) bits.push(`mi ${f._mile.toFixed(0)}`);
     return bits.length ? ` <small style="color:var(--muted);">${bits.join(" · ")}</small>` : "";
   }
+  // -------- All-trips manager --------
+  // List view that surfaces every saved trip with its core stats and
+  // inline edit controls — so the planner isn't the only place to see
+  // and modify trip data.
+  function tripStats(t) {
+    const ids = Array.isArray(t.segs) ? t.segs.map(Number) : [];
+    const segs = ids.map((id) => segIndex.get(id)).filter(Boolean);
+    const dirOrdered = (t.dir === "sobo") ? [...segs].sort((a, b) => b.id - a.id) : [...segs].sort((a, b) => a.id - b.id);
+    const totalMi = segs.reduce((a, s) => a + s.miles, 0);
+    const states = [...new Set(segs.map((s) => effectiveStateName(s)))];
+    const first = dirOrdered[0];
+    const last = dirOrdered[dirOrdered.length - 1];
+    const fromName = first && (t.dir === "sobo" ? first.to : first.from);
+    const toName = last && (t.dir === "sobo" ? last.from : last.to);
+    return { count: ids.length, totalMi, states, fromName, toName };
+  }
+  function fmtTripCreated(t) {
+    const n = Number(t.createdAt);
+    if (!Number.isFinite(n)) return "";
+    const d = new Date(n);
+    if (isNaN(d.getTime())) return "";
+    return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  }
+  function renderTripsManagerList() {
+    const host = $("trips-manager-body");
+    if (!host) return;
+    if (!trips || trips.length === 0) {
+      host.innerHTML = `<div class="tm-empty">No saved trips yet. Use <strong>+ New</strong> in the planner to save your current planned set as a trip.</div>`;
+      return;
+    }
+    const sorted = [...trips].sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+    const cards = sorted.map((t) => {
+      const isActive = t.id === activeTripId;
+      const st = tripStats(t);
+      const dir = (t.dir === "sobo" || t.dir === "nobo") ? t.dir : "nobo";
+      const range = (st.fromName && st.toName)
+        ? `${escapeHtml(st.fromName)} <span class="tm-arrow">→</span> ${escapeHtml(st.toName)}`
+        : `<em style="color:var(--muted);">no sections yet</em>`;
+      const stateBits = st.states.length > 0
+        ? `<span class="tm-states">${st.states.map(escapeHtml).join(" · ")}</span>`
+        : "";
+      const created = fmtTripCreated(t);
+      return `<article class="tm-card${isActive ? " tm-card-active" : ""}" data-trip-id="${escapeHtml(t.id)}">` +
+        `<header class="tm-header">` +
+          `<input class="tm-name" data-tm-name value="${escapeHtml(t.name)}" maxlength="80" aria-label="Trip name" />` +
+          (isActive ? `<span class="tm-active-badge" title="Currently active in the planner">● active</span>` : "") +
+        `</header>` +
+        `<div class="tm-meta">` +
+          `<span class="tm-stat"><strong>${st.count}</strong> section${st.count === 1 ? "" : "s"}</span>` +
+          `<span class="tm-stat"><strong>${st.totalMi.toFixed(1)}</strong> mi</span>` +
+          `<label class="tm-dir">Dir <select data-tm-dir>` +
+            `<option value="nobo"${dir === "nobo" ? " selected" : ""}>NOBO ↑</option>` +
+            `<option value="sobo"${dir === "sobo" ? " selected" : ""}>SOBO ↓</option>` +
+          `</select></label>` +
+          (created ? `<span class="tm-stat tm-created">saved ${escapeHtml(created)}</span>` : "") +
+        `</div>` +
+        `<div class="tm-range">${range}${stateBits ? " · " + stateBits : ""}</div>` +
+        `<footer class="tm-actions">` +
+          `<button data-tm-open${isActive ? " disabled" : ""}>${isActive ? "Currently open" : "Open in planner"}</button>` +
+          `<button data-tm-duplicate title="Make a copy of this trip">⎘ Duplicate</button>` +
+          `<button data-tm-delete title="Delete this trip" class="tm-danger">✕ Delete</button>` +
+        `</footer>` +
+        `</article>`;
+    }).join("");
+    host.innerHTML = cards;
+  }
+  function openTripsManager() {
+    const n = (trips && trips.length) || 0;
+    const countEl = $("trips-manager-count");
+    if (countEl) countEl.textContent = n ? `(${n} trip${n === 1 ? "" : "s"})` : "";
+    renderTripsManagerList();
+    $("trips-manager-modal")?.classList.add("show");
+  }
+  function closeTripsManager() {
+    $("trips-manager-modal")?.classList.remove("show");
+  }
+  function tripsManagerCardId(el) {
+    const card = el.closest("[data-trip-id]");
+    return card ? card.dataset.tripId : null;
+  }
+  function handleTripsManagerAction(e) {
+    const id = tripsManagerCardId(e.target);
+    if (!id) return;
+    const t = trips.find((x) => x.id === id);
+    if (!t) return;
+    if (e.target.closest("[data-tm-open]")) {
+      switchTrip(id);
+      closeTripsManager();
+      renderPlannedSummary();
+      return;
+    }
+    if (e.target.closest("[data-tm-duplicate]")) {
+      const copy = {
+        ...t,
+        id: "trip-" + Date.now(),
+        name: t.name + " (copy)",
+        createdAt: Date.now(),
+        segs: Array.isArray(t.segs) ? [...t.segs] : [],
+        pins: Array.isArray(t.pins) ? [...t.pins] : [],
+        dayOverrides: Array.isArray(t.dayOverrides) ? [...t.dayOverrides] : [],
+      };
+      trips.push(copy);
+      saveTrips();
+      renderTripsManagerList();
+      renderPlannedSummary();
+      return;
+    }
+    if (e.target.closest("[data-tm-delete]")) {
+      if (!confirm(`Delete trip "${t.name}"? This only removes the saved trip; it does not unmark any sections as planned or hiked.`)) return;
+      const wasActive = activeTripId === id;
+      trips = trips.filter((x) => x.id !== id);
+      if (wasActive) {
+        activeTripId = trips.length > 0 ? trips[0].id : null;
+        if (activeTripId) syncPlannedFromActiveTrip();
+        else planned = new Set();
+        saveProgress();
+        renderSections();
+        updateStats();
+        refreshMapStyles();
+      }
+      saveTrips();
+      renderTripsManagerList();
+      renderPlannedSummary();
+      return;
+    }
+  }
+  function handleTripsManagerChange(e) {
+    const id = tripsManagerCardId(e.target);
+    if (!id) return;
+    const t = trips.find((x) => x.id === id);
+    if (!t) return;
+    if (e.target.matches("[data-tm-name]")) {
+      const v = e.target.value.trim();
+      if (v && v !== t.name) {
+        t.name = v;
+        saveTrips();
+        renderPlannedSummary();
+        // Re-render only the active badge / created label; keep input
+        // focus by refreshing the list AFTER blur.
+        if (e.type === "blur") renderTripsManagerList();
+      }
+      return;
+    }
+    if (e.target.matches("[data-tm-dir]")) {
+      t.dir = e.target.value === "sobo" ? "sobo" : "nobo";
+      saveTrips();
+      // If this is the active trip the planner itinerary depends on
+      // direction — re-render. Otherwise just the manager card.
+      if (activeTripId === id) renderPlannedSummary();
+      renderTripsManagerList();
+      return;
+    }
+  }
   function renderPlannedSummary() {
     const plannedSegs = buildPlannedSegs();
 
@@ -3251,6 +3404,9 @@
       if (t) {
         html.push(`<button id="trip-rename" title="Rename current trip">✎ Rename</button>`);
         html.push(`<button id="trip-delete" title="Delete current trip">✕ Delete</button>`);
+      }
+      if (trips.length > 0) {
+        html.push(`<button id="trips-manage" title="See every saved trip and edit its values">📋 Manage all (${trips.length})</button>`);
       }
       html.push(`</div>`);
       const dir = tripDirection();
@@ -3519,6 +3675,7 @@
       saveTrips();
       renderPlannedSummary();
     });
+    $("trips-manage")?.addEventListener("click", openTripsManager);
     $("trip-rename")?.addEventListener("click", () => {
       const t = getActiveTrip();
       if (!t) return;
@@ -6353,6 +6510,12 @@
     $("pack-share-btn")?.addEventListener("click", openSharePack);
     $("pack-transfer-btn")?.addEventListener("click", openPackTransfer);
     $("pack-transfer-cancel")?.addEventListener("click", closePackTransfer);
+    // Trips manager: bind once on the static modal body so re-renders
+    // of cards don't have to re-wire each card individually.
+    $("trips-manager-close")?.addEventListener("click", closeTripsManager);
+    $("trips-manager-body")?.addEventListener("click", handleTripsManagerAction);
+    $("trips-manager-body")?.addEventListener("change", handleTripsManagerChange);
+    $("trips-manager-body")?.addEventListener("blur", handleTripsManagerChange, true);
     $("pack-transfer-apply")?.addEventListener("click", applyPackTransfer);
     $("pack-transfer-from")?.addEventListener("change", () => renderPackTransferItems());
     $("pack-transfer-select-all")?.addEventListener("change", (e) => {

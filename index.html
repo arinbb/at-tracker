@@ -1348,6 +1348,19 @@
   /* The header gets a "search" button, but a keyboard shortcut also opens the overlay */
 </style>
 
+<!-- Trips manager: every saved trip in one place, with inline name /
+     direction edits, duplicate, delete, and open-in-planner. -->
+<div class="modal-bg" id="trips-manager-modal" style="z-index: 1050;">
+  <div class="modal" style="max-width: 720px;">
+    <h2>📋 All trips <small id="trips-manager-count" style="font-size: 12px; color: var(--muted); font-weight: 400;"></small></h2>
+    <p style="font-size: 12px; color: var(--muted); margin: 0 0 12px;">Each card is one saved trip (a few days on the trail covering some sections). Edit a name, flip the direction, duplicate, or delete. Click <strong>Open in planner</strong> to drill in.</p>
+    <div id="trips-manager-body" class="trips-manager-body"></div>
+    <div class="modal-actions">
+      <button id="trips-manager-close" class="primary">Done</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-bg" id="planned-modal">
   <div class="modal" style="max-width: 820px;">
     <h2 id="planned-title" style="margin-bottom: 2px;">🗓 <span id="planned-trip-name">Plan a hike</span></h2>
@@ -1437,6 +1450,69 @@
   #planned-body .trip-actions { display: flex; gap: 6px; flex-wrap: wrap; }
   #planned-modal h2#planned-title { font-size: 19px; }
   #planned-modal #planned-trip-name { color: var(--accent); }
+
+  /* ===== Trips manager modal ===== */
+  .trips-manager-body { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow-y: auto; padding-right: 4px; }
+  .trips-manager-body .tm-empty { padding: 24px; text-align: center; color: var(--muted); }
+  .trips-manager-body .tm-card {
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 10px 12px;
+    background: var(--panel-alt);
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .trips-manager-body .tm-card-active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .trips-manager-body .tm-header {
+    display: flex; align-items: center; gap: 10px;
+  }
+  .trips-manager-body .tm-name {
+    font: inherit; font-size: 15px; font-weight: 600;
+    padding: 4px 8px; border: 1px solid transparent;
+    border-radius: 4px; background: transparent; color: var(--ink);
+    flex: 1; min-width: 0; box-sizing: border-box;
+  }
+  .trips-manager-body .tm-name:hover, .trips-manager-body .tm-name:focus {
+    border-color: var(--rule); background: var(--input-bg); outline: none;
+  }
+  .trips-manager-body .tm-name:focus { border-color: var(--accent); }
+  .trips-manager-body .tm-active-badge {
+    font-size: 11px; color: var(--accent); font-weight: 600;
+    background: rgba(139, 58, 47, 0.10); padding: 2px 8px;
+    border-radius: 999px; white-space: nowrap;
+  }
+  .trips-manager-body .tm-meta {
+    display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
+    font-size: 12px; color: var(--muted);
+  }
+  .trips-manager-body .tm-meta .tm-stat { white-space: nowrap; }
+  .trips-manager-body .tm-meta .tm-stat strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .trips-manager-body .tm-meta .tm-created { font-style: italic; }
+  .trips-manager-body .tm-dir {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 12px; color: var(--muted);
+  }
+  .trips-manager-body .tm-dir select {
+    font: inherit; font-size: 12px; padding: 2px 6px;
+    border: 1px solid var(--rule); border-radius: 4px;
+    background: var(--input-bg); color: var(--ink);
+  }
+  .trips-manager-body .tm-range {
+    font-size: 12.5px; color: var(--ink); line-height: 1.35;
+    padding: 4px 0 2px;
+  }
+  .trips-manager-body .tm-range .tm-arrow { color: var(--muted); margin: 0 4px; }
+  .trips-manager-body .tm-range .tm-states { color: var(--muted); }
+  .trips-manager-body .tm-actions {
+    display: flex; gap: 6px; flex-wrap: wrap; padding-top: 4px;
+  }
+  .trips-manager-body .tm-actions button {
+    font: inherit; font-size: 12px; padding: 4px 10px;
+    border: 1px solid var(--rule); border-radius: 4px;
+    background: var(--input-bg); color: var(--ink); cursor: pointer;
+  }
+  .trips-manager-body .tm-actions button:hover:not([disabled]) { border-color: var(--accent); color: var(--accent); }
+  .trips-manager-body .tm-actions button[disabled] { opacity: 0.6; cursor: default; }
+  .trips-manager-body .tm-actions .tm-danger:hover { border-color: var(--accent); color: var(--accent); }
   /* Trip builder — explicit State → Section → Add controls so each
      trip's sections can be assembled without leaving the planner. */
   #planned-body .trip-builder {
@@ -2258,6 +2334,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=80"></script>
+<script src="app.js?v=81"></script>
 </body>
 </html>
