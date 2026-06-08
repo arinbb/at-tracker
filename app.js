@@ -1389,6 +1389,14 @@
     }
     // Second click: build the route + open the confirmation modal.
     const route = computeMapTripRoute(mapTripSnapA, snap);
+    // Stash the click order so a north-to-south tap pair gets recorded
+    // as a southbound trip (preserves user intent vs. the route which
+    // is always normalized to south→north for storage).
+    if (route) {
+      const aMile = (segCumulative.get(mapTripSnapA.segId) || 0) + mapTripSnapA.atMi;
+      const bMile = (segCumulative.get(snap.segId) || 0) + snap.atMi;
+      route.clickedSobo = aMile > bMile;
+    }
     mapTripMarkerB = _mapTripMarker([snap.lat, snap.lon], "B").addTo(map);
     if (!route || (route.sectionsFull.length === 0 && route.sectionsPartial.length === 0)) {
       updateMapTripBanner("Those two points landed on the same spot. Try again.");
@@ -1468,7 +1476,7 @@
       name,
       createdAt: Date.now(),
       segs,
-      dir: "nobo",
+      dir: route.clickedSobo ? "sobo" : "nobo",
       status: "completed",
       completedAt: date,
       source: "map-pick",
@@ -3577,6 +3585,7 @@
           `<input class="tm-name" data-tm-name value="${escapeHtml(t.name)}" maxlength="80" aria-label="Trip name" />` +
           (isActive ? `<span class="tm-active-badge" title="Currently active in the planner">● active</span>` : "") +
           (mode === "completed" ? `<span class="tm-active-badge" style="background:rgba(42,125,58,0.12);color:var(--hike);">✓ done</span>` : "") +
+          (mode === "completed" && t.source === "map-pick" ? `<span class="tm-active-badge" style="background:rgba(26,95,180,0.12);color:var(--plan);" title="Created by tapping two points on the map">🗺 from map</span>` : "") +
         `</header>` +
         `<div class="tm-meta">` +
           `<span class="tm-stat"><strong>${st.count}</strong> section${st.count === 1 ? "" : "s"}</span>` +
