@@ -1155,6 +1155,7 @@
         <button id="add-trip-btn" type="button" title="Pick a start segment, then an end segment, then a date" aria-pressed="false" style="font-size: 12px; padding: 4px 8px;">+ Trip</button>
       </div>
       <div id="add-trip-banner" style="display:none;font-size:12px;padding:8px 10px;border-radius:6px;background:var(--plan-bg);color:var(--plan);line-height:1.4;"></div>
+      <div id="multi-select-banner" role="status"></div>
     </div>
     <div id="loading">Loading AT trail data…</div>
     <div id="sections"></div>
@@ -1844,8 +1845,37 @@
       </div>
     </form>
     <div class="modal-actions">
+      <button id="pack-transfer-btn" title="Move or copy items between profile packs">🔁 Transfer items…</button>
       <button id="pack-share-btn">Share pack</button>
       <button id="pack-close" class="primary">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Cross-profile pack transfer: copy or move items between profile loadouts -->
+<div class="modal-bg" id="pack-transfer-modal" style="z-index: 1050;">
+  <div class="modal" style="max-width: 560px;">
+    <h2>Transfer pack items between profiles</h2>
+    <p id="pack-transfer-help" style="font-size: 12px; color: var(--muted); margin: 0 0 12px;">Pick a source profile, choose items, and either copy them or move them to another profile.</p>
+    <div class="pack-transfer-grid">
+      <label>From profile<select id="pack-transfer-from"></select></label>
+      <label>To profile<select id="pack-transfer-to"></select></label>
+      <label class="pack-transfer-action">Action
+        <span class="pack-transfer-radios">
+          <label><input type="radio" name="pack-transfer-action" value="copy" checked /> Copy</label>
+          <label><input type="radio" name="pack-transfer-action" value="move" /> Move</label>
+        </span>
+      </label>
+    </div>
+    <div class="pack-transfer-list-header">
+      <label class="pack-transfer-all"><input type="checkbox" id="pack-transfer-select-all" /> Select all</label>
+      <span id="pack-transfer-count" class="pack-transfer-count">0 selected</span>
+    </div>
+    <div id="pack-transfer-items" class="pack-transfer-items"></div>
+    <div id="pack-transfer-error" class="pack-transfer-error" role="alert"></div>
+    <div class="modal-actions">
+      <button id="pack-transfer-cancel">Cancel</button>
+      <button id="pack-transfer-apply" class="primary">Apply</button>
     </div>
   </div>
 </div>
@@ -2066,6 +2096,136 @@
     #pack-body .pack-item { grid-template-columns: 1fr auto; }
     #pack-body .pack-item-cond, #pack-body .pack-item-actions { grid-column: span 2; justify-self: end; }
   }
+
+  /* ===== Multi-select clarity =====
+     During range-pick mode the section checkboxes do NOT toggle hiked
+     until both ends are picked. Reframe them as "endpoint markers" so
+     users don't think they're just checking off sections.
+  */
+  #multi-select-banner {
+    display: none;
+    font-size: 12px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: rgba(139, 58, 47, 0.10);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    line-height: 1.4;
+  }
+  body.multi-select #multi-select-banner { display: block; }
+  body.multi-select #multi-select-btn {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+  body.multi-select .seg { cursor: crosshair; }
+  body.multi-select .seg input[type=checkbox] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border: 2px solid var(--accent);
+    border-radius: 50%;
+    background: transparent;
+    cursor: pointer;
+    transition: background .12s ease;
+  }
+  body.multi-select .seg input[type=checkbox]:hover { background: rgba(139, 58, 47, 0.15); }
+  body.multi-select .seg[data-anchor] { outline: 2px solid var(--accent); outline-offset: -2px; }
+  body.multi-select .seg[data-anchor] input[type=checkbox] {
+    background: var(--accent);
+    box-shadow: 0 0 0 3px rgba(139, 58, 47, 0.25);
+  }
+  body.multi-select .seg .plan-btn,
+  body.multi-select .seg .zoom-btn,
+  body.multi-select .seg .split-btn,
+  body.multi-select .seg .lore-btn { pointer-events: none; opacity: 0.35; }
+
+  /* ===== Cross-profile pack transfer modal ===== */
+  .pack-transfer-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 12px;
+    margin-bottom: 10px;
+  }
+  .pack-transfer-grid label {
+    display: flex; flex-direction: column; gap: 3px;
+    font-size: 12px; color: var(--muted); min-width: 0;
+  }
+  .pack-transfer-grid label.pack-transfer-action { grid-column: 1 / -1; }
+  .pack-transfer-grid select {
+    font: inherit; font-size: 13px; padding: 5px 8px;
+    border: 1px solid var(--rule); border-radius: 4px;
+    background: var(--input-bg); color: var(--ink);
+    width: 100%; min-width: 0; box-sizing: border-box;
+  }
+  .pack-transfer-radios { display: inline-flex; gap: 14px; padding-top: 2px; }
+  .pack-transfer-radios label {
+    flex-direction: row; align-items: center; gap: 4px;
+    color: var(--ink); font-size: 13px;
+  }
+  .pack-transfer-list-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin: 6px 0 4px; font-size: 12px;
+  }
+  .pack-transfer-list-header label { display: inline-flex; align-items: center; gap: 6px; }
+  .pack-transfer-count { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .pack-transfer-items {
+    max-height: 260px;
+    overflow-y: auto;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+  }
+  .pack-transfer-items:empty::after {
+    content: "(empty)";
+    display: block;
+    padding: 14px;
+    color: var(--muted);
+    font-style: italic;
+    text-align: center;
+  }
+  .pack-transfer-items .pti-row {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+    gap: 8px; align-items: center;
+    padding: 6px 10px; font-size: 13px;
+    border-bottom: 1px solid var(--rule);
+    cursor: pointer;
+  }
+  .pack-transfer-items .pti-row:last-child { border-bottom: none; }
+  .pack-transfer-items .pti-row:hover { background: var(--hover); }
+  .pack-transfer-items .pti-row .pti-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pack-transfer-items .pti-row .pti-meta { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .pack-transfer-error { color: var(--accent); font-size: 12px; min-height: 16px; margin: 6px 0; }
+  .pack-transfer-error:empty { display: none; }
+
+  /* ===== Layer control "all on / all off" toggle ===== */
+  .leaflet-control-layers .leaflet-toggle-all {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 4px 6px;
+    border-bottom: 1px solid var(--rule);
+    margin-bottom: 4px;
+  }
+  .leaflet-control-layers .leaflet-toggle-all .leaflet-toggle-all-label {
+    font-size: 11px;
+    color: var(--muted);
+    flex: 1;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .leaflet-control-layers .leaflet-toggle-all button {
+    font: inherit;
+    font-size: 11px;
+    padding: 2px 8px;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    background: var(--input-bg);
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .leaflet-control-layers .leaflet-toggle-all button:hover {
+    border-color: var(--accent); color: var(--accent);
+  }
 </style>
 
 <div class="map-legend leaflet-bar leaflet-control" id="map-legend" style="display:none;">
@@ -2098,6 +2258,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=78"></script>
+<script src="app.js?v=80"></script>
 </body>
 </html>

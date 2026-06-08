@@ -970,6 +970,9 @@
       { "🥾 Marked trails (Waymarked)": hikingOverlay },
       { position: "topright", collapsed: true }
     ).addTo(map);
+    // "All on / All off" master toggle prepended to the overlays panel
+    // so every overlay can be flipped at once instead of one by one.
+    injectLayerToggleAll();
     // Remember the base layer the moment it changes.
     map.on("baselayerchange", (e) => {
       if (e && e.name) { prefs.mapBase = e.name; savePrefs(); }
@@ -986,6 +989,41 @@
     });
 
     // Custom map legend control
+    function injectLayerToggleAll() {
+      const root = layerControl && layerControl.getContainer && layerControl.getContainer();
+      const overlayList = root && root.querySelector(".leaflet-control-layers-overlays");
+      if (!overlayList || overlayList.querySelector(".leaflet-toggle-all")) return;
+      const wrap = L.DomUtil.create("div", "leaflet-toggle-all");
+      wrap.innerHTML =
+        '<span class="leaflet-toggle-all-label">All overlays:</span>' +
+        '<button type="button" data-toggle-all="on" title="Turn every overlay on">on</button>' +
+        '<button type="button" data-toggle-all="off" title="Turn every overlay off">off</button>';
+      overlayList.insertBefore(wrap, overlayList.firstChild);
+      L.DomEvent.disableClickPropagation(wrap);
+      wrap.addEventListener("click", (e) => {
+        const b = e.target.closest("[data-toggle-all]");
+        if (!b) return;
+        e.preventDefault();
+        const wantOn = b.dataset.toggleAll === "on";
+        const boxes = overlayList.querySelectorAll('input[type="checkbox"]');
+        boxes.forEach((cb) => {
+          if (cb.checked !== wantOn) cb.click(); // fires Leaflet's standard add/remove
+        });
+      });
+    }
+    // Leaflet rebuilds the overlay list every time addOverlay() runs
+    // (shelter, each feature kind, lore), wiping any DOM we inject.
+    // Watch the list and re-prepend the toggle-all row whenever needed.
+    {
+      const root = layerControl.getContainer();
+      const overlayList = root && root.querySelector(".leaflet-control-layers-overlays");
+      if (overlayList) {
+        const mo = new MutationObserver(() => {
+          if (!overlayList.querySelector(".leaflet-toggle-all")) injectLayerToggleAll();
+        });
+        mo.observe(overlayList, { childList: true });
+      }
+    }
     const Legend = L.Control.extend({
       options: { position: "bottomleft" },
       onAdd() {
@@ -2711,6 +2749,127 @@
     $("share-pack-url").value = buildPackShareURL(pack);
     $("share-pack-text").value = buildPackTextSummary(pack);
     $("share-pack-modal").classList.add("show");
+  }
+
+  // -------- Cross-profile pack transfer --------
+  // Move or copy items between any two profiles' loadouts. Works across
+  // profiles without switching the active one; updates in-memory `pack`
+  // (and re-renders) when the active profile is the source or destination.
+  function loadPackFor(profileName) {
+    if (profileName === activeProfile) {
+      return { items: Array.isArray(pack.items) ? pack.items : [] };
+    }
+    const raw = safeGet(packKey(profileName));
+    if (!raw) return { items: [] };
+    try {
+      const obj = JSON.parse(raw);
+      return { items: Array.isArray(obj.items) ? obj.items : [] };
+    } catch (e) { return { items: [] }; }
+  }
+  function savePackFor(profileName, packObj) {
+    safeSet(packKey(profileName), JSON.stringify(packObj));
+    if (profileName === activeProfile) {
+      pack = packObj;
+      // savePack() persists active profile + cloud; here we already wrote
+      // local for the named profile, so just nudge cloud sync.
+      scheduleCloudSave();
+    } else {
+      scheduleCloudSave();
+    }
+  }
+  function openPackTransfer() {
+    const fromSel = $("pack-transfer-from");
+    const toSel = $("pack-transfer-to");
+    const help = $("pack-transfer-help");
+    const err = $("pack-transfer-error");
+    err.textContent = "";
+    if (!profiles || profiles.length < 2) {
+      help.innerHTML =
+        '<strong style="color:var(--accent);">Need a second profile.</strong> ' +
+        'Open <em>Settings → Profile → Add</em> to create another profile, then come back here to move or copy items.';
+      $("pack-transfer-apply").disabled = true;
+      fromSel.innerHTML = `<option>${escapeHtml(activeProfile)}</option>`;
+      toSel.innerHTML = `<option>${escapeHtml(activeProfile)}</option>`;
+      $("pack-transfer-items").innerHTML = "";
+      $("pack-transfer-modal").classList.add("show");
+      return;
+    }
+    help.textContent = "Pick a source profile, choose items, and either copy them or move them to another profile.";
+    $("pack-transfer-apply").disabled = false;
+    const opts = (selected) => profiles
+      .map((p) => `<option value="${escapeHtml(p)}"${p === selected ? " selected" : ""}>${escapeHtml(p)}</option>`)
+      .join("");
+    const defaultFrom = profiles.find((p) => p !== activeProfile) || profiles[0];
+    fromSel.innerHTML = opts(defaultFrom);
+    toSel.innerHTML = opts(activeProfile);
+    document.querySelector('input[name="pack-transfer-action"][value="copy"]').checked = true;
+    renderPackTransferItems();
+    $("pack-transfer-modal").classList.add("show");
+  }
+  function renderPackTransferItems() {
+    const fromName = $("pack-transfer-from").value;
+    const src = loadPackFor(fromName);
+    const host = $("pack-transfer-items");
+    if (!src.items.length) {
+      host.innerHTML = "";
+      $("pack-transfer-select-all").checked = false;
+      updatePackTransferCount();
+      return;
+    }
+    host.innerHTML = src.items
+      .map((it) => {
+        const cat = packCategory(it.category);
+        const qty = packItemQty(it);
+        const oz = (Number(it.weight_oz) || 0) * qty;
+        const meta = `${cat.icon} ${escapeHtml(cat.label)} · ${oz.toFixed(1)} oz${qty > 1 ? ` (× ${qty})` : ""}`;
+        return `<label class="pti-row">` +
+          `<input type="checkbox" data-item-id="${escapeHtml(it.id)}" />` +
+          `<span class="pti-name">${escapeHtml(it.name || "(unnamed)")}</span>` +
+          `<span class="pti-meta">${meta}</span>` +
+          `</label>`;
+      })
+      .join("");
+    $("pack-transfer-select-all").checked = false;
+    updatePackTransferCount();
+  }
+  function updatePackTransferCount() {
+    const all = document.querySelectorAll('#pack-transfer-items input[type="checkbox"]');
+    const sel = document.querySelectorAll('#pack-transfer-items input[type="checkbox"]:checked');
+    $("pack-transfer-count").textContent = `${sel.length} selected`;
+    $("pack-transfer-select-all").checked = all.length > 0 && sel.length === all.length;
+  }
+  function closePackTransfer() {
+    $("pack-transfer-modal").classList.remove("show");
+  }
+  function applyPackTransfer() {
+    const err = $("pack-transfer-error");
+    err.textContent = "";
+    const fromName = $("pack-transfer-from").value;
+    const toName = $("pack-transfer-to").value;
+    const action = document.querySelector('input[name="pack-transfer-action"]:checked')?.value || "copy";
+    if (!fromName || !toName) { err.textContent = "Pick a source and destination profile."; return; }
+    if (fromName === toName) { err.textContent = "Source and destination must be different profiles."; return; }
+    const selectedIds = [...document.querySelectorAll('#pack-transfer-items input[type="checkbox"]:checked')].map((cb) => cb.dataset.itemId);
+    if (selectedIds.length === 0) { err.textContent = "Select at least one item to transfer."; return; }
+    const src = loadPackFor(fromName);
+    const dest = loadPackFor(toName);
+    const selectedSet = new Set(selectedIds);
+    const picked = src.items.filter((it) => selectedSet.has(it.id));
+    if (picked.length === 0) { err.textContent = "Those items weren't found in the source pack."; return; }
+    // Copy gives fresh ids so it can't collide with destination's existing
+    // ids; move keeps the same id (only one profile owns the item now).
+    const additions = picked.map((it) => action === "copy"
+      ? { ...it, id: newPackItemId() }
+      : { ...it });
+    const newDest = { items: [...dest.items, ...additions] };
+    savePackFor(toName, newDest);
+    if (action === "move") {
+      const remaining = src.items.filter((it) => !selectedSet.has(it.id));
+      savePackFor(fromName, { items: remaining });
+    }
+    // Re-render if the active profile's pack changed.
+    if (toName === activeProfile || fromName === activeProfile) renderPack();
+    closePackTransfer();
   }
   // Called once at boot if a ?pk=... was found in the URL hash.
   function showImportPackPrompt(incoming) {
@@ -4531,7 +4690,12 @@
           multiSelectAnchor = null;
           document.body.classList.remove("multi-select");
           multiSelectMode = false;
-          $("multi-select-btn")?.setAttribute("aria-pressed", "false");
+          const msBtn = $("multi-select-btn");
+          if (msBtn) {
+            msBtn.setAttribute("aria-pressed", "false");
+            msBtn.textContent = "Multi-select";
+          }
+          updateMultiSelectBanner();
         }
         if (desired) {
           openBulkDate(ids, true);
@@ -4552,6 +4716,7 @@
         document.querySelectorAll(".seg[data-anchor]").forEach((el) => el.removeAttribute("data-anchor"));
         const row = cb.closest(".seg");
         if (row) row.setAttribute("data-anchor", "true");
+        updateMultiSelectBanner();
         return;
       }
       toggleSegment(id, desired);
@@ -4623,7 +4788,30 @@
     document.body.classList.toggle("multi-select", multiSelectMode);
     document.querySelectorAll(".seg[data-anchor]").forEach((el) => el.removeAttribute("data-anchor"));
     const btn = $("multi-select-btn");
-    if (btn) btn.setAttribute("aria-pressed", String(multiSelectMode));
+    if (btn) {
+      btn.setAttribute("aria-pressed", String(multiSelectMode));
+      btn.textContent = multiSelectMode ? "Cancel range" : "Multi-select";
+    }
+    updateMultiSelectBanner();
+  }
+  // The in-sidebar prompt that explains range-pick mode so users don't
+  // confuse the checkboxes for "hike off the box". Walks through the
+  // two-step interaction as the anchor is set.
+  function updateMultiSelectBanner() {
+    const el = $("multi-select-banner");
+    if (!el) return;
+    if (!multiSelectMode) { el.textContent = ""; return; }
+    if (multiSelectAnchor === null) {
+      el.innerHTML =
+        '<strong>Pick a range</strong> — tap the first section, then the last. ' +
+        'Everything between will be marked hiked (or cleared, if both ends are already hiked). ' +
+        'The checkboxes act as <em>endpoints</em>, not toggles, until you finish.';
+    } else {
+      const seg = segIndex.get(multiSelectAnchor);
+      const name = seg ? `${seg.from} → ${seg.to}` : "section";
+      el.innerHTML =
+        `<strong>Start picked: ${escapeHtml(name)}</strong> — now tap the section where the range ends.`;
+    }
   }
   // ----- Add-trip: pick start segment, then end, then a date.
   // Reuses the bulk-date modal to apply the same date to every segment in
@@ -6163,6 +6351,24 @@
     $("pack-add-cancel-edit")?.addEventListener("click", packCancelEdit);
     $("pack-body")?.addEventListener("click", onPackBodyClick);
     $("pack-share-btn")?.addEventListener("click", openSharePack);
+    $("pack-transfer-btn")?.addEventListener("click", openPackTransfer);
+    $("pack-transfer-cancel")?.addEventListener("click", closePackTransfer);
+    $("pack-transfer-apply")?.addEventListener("click", applyPackTransfer);
+    $("pack-transfer-from")?.addEventListener("change", () => renderPackTransferItems());
+    $("pack-transfer-select-all")?.addEventListener("change", (e) => {
+      document.querySelectorAll('#pack-transfer-items input[type="checkbox"]').forEach((cb) => { cb.checked = e.target.checked; });
+      updatePackTransferCount();
+    });
+    $("pack-transfer-items")?.addEventListener("change", updatePackTransferCount);
+    $("pack-transfer-items")?.addEventListener("click", (e) => {
+      const row = e.target.closest(".pti-row");
+      if (!row) return;
+      // clicking the row body toggles its checkbox so the whole row is a hit target
+      if (e.target.tagName !== "INPUT") {
+        const cb = row.querySelector('input[type="checkbox"]');
+        if (cb) { cb.checked = !cb.checked; updatePackTransferCount(); }
+      }
+    });
     $("share-pack-close")?.addEventListener("click", () => $("share-pack-modal").classList.remove("show"));
     $("share-pack-copy-url")?.addEventListener("click", () => {
       const inp = $("share-pack-url");
