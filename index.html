@@ -1130,6 +1130,7 @@
 <nav class="primary-tabs" id="primary-tabs" role="tablist">
   <button type="button" data-tab="tracker" class="active" role="tab" aria-selected="true"><span class="tab-icon">🗺</span><span class="tab-label"> Tracker</span></button>
   <button type="button" data-tab="planner" id="planned-btn" role="tab" aria-selected="false"><span class="tab-icon">🗓</span><span class="tab-label"> Hike Planner</span></button>
+  <button type="button" data-tab="trips" id="trips-tab-btn" role="tab" aria-selected="false"><span class="tab-icon">🏕</span><span class="tab-label"> Trips</span></button>
   <button type="button" data-tab="pack" id="pack-btn" role="tab" aria-selected="false"><span class="tab-icon">🎒</span><span class="tab-label"> Pack</span></button>
   <button type="button" data-tab="stats" id="stats-btn" role="tab" aria-selected="false"><span class="tab-icon">📊</span><span class="tab-label"> Stats</span></button>
   <button type="button" data-tab="settings" id="settings-tab" role="tab" aria-selected="false"><span class="tab-icon">⚙</span><span class="tab-label"> Settings</span></button>
@@ -1348,12 +1349,26 @@
   /* The header gets a "search" button, but a keyboard shortcut also opens the overlay */
 </style>
 
-<!-- Trips manager: every saved trip in one place, with inline name /
-     direction edits, duplicate, delete, and open-in-planner. -->
+<!-- Trips (completed) — separate top-level view of every plan you've
+     actually finished. The Hike Planner only shows in-progress plans;
+     this modal is the history. -->
+<div class="modal-bg" id="trips-modal">
+  <div class="modal" style="max-width: 760px;">
+    <h2>🏕 Trips <small id="trips-modal-count" style="font-size: 12px; color: var(--muted); font-weight: 400;"></small></h2>
+    <p style="font-size: 12px; color: var(--muted); margin: 0 0 12px;">Plans you've completed. Each card is one finished trip — edit the date or name, reopen as a plan if it isn't really done, or delete the record (this won't unmark any sections as hiked).</p>
+    <div id="trips-modal-body" class="trips-manager-body"></div>
+    <div class="modal-actions">
+      <button id="trips-modal-close" class="primary">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- Plans manager: every IN-PROGRESS plan in one place, with inline name /
+     direction edits, duplicate, delete, mark-completed, and open-in-planner. -->
 <div class="modal-bg" id="trips-manager-modal" style="z-index: 1050;">
   <div class="modal" style="max-width: 720px;">
-    <h2>📋 All trips <small id="trips-manager-count" style="font-size: 12px; color: var(--muted); font-weight: 400;"></small></h2>
-    <p style="font-size: 12px; color: var(--muted); margin: 0 0 12px;">Each card is one saved trip (a few days on the trail covering some sections). Edit a name, flip the direction, duplicate, or delete. Click <strong>Open in planner</strong> to drill in.</p>
+    <h2>📋 Plans <small id="trips-manager-count" style="font-size: 12px; color: var(--muted); font-weight: 400;"></small></h2>
+    <p style="font-size: 12px; color: var(--muted); margin: 0 0 12px;">Trips you're <em>planning</em>. Edit a name, flip the direction, duplicate, or delete. When you've actually hiked one, click <strong>✅ Mark completed</strong> and it moves to the <strong>🏕 Trips</strong> tab.</p>
     <div id="trips-manager-body" class="trips-manager-body"></div>
     <div class="modal-actions">
       <button id="trips-manager-close" class="primary">Done</button>
@@ -1513,6 +1528,20 @@
   .trips-manager-body .tm-actions button:hover:not([disabled]) { border-color: var(--accent); color: var(--accent); }
   .trips-manager-body .tm-actions button[disabled] { opacity: 0.6; cursor: default; }
   .trips-manager-body .tm-actions .tm-danger:hover { border-color: var(--accent); color: var(--accent); }
+  .trips-manager-body .tm-actions .tm-primary {
+    background: var(--hike); color: #fff; border-color: var(--hike); font-weight: 600;
+  }
+  .trips-manager-body .tm-actions .tm-primary:hover { filter: brightness(1.08); border-color: var(--hike); color: #fff; }
+  .trips-manager-body .tm-completed {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 12px; color: var(--muted);
+  }
+  .trips-manager-body .tm-completed input[type=date] {
+    font: inherit; font-size: 12px; padding: 2px 6px;
+    border: 1px solid var(--rule); border-radius: 4px;
+    background: var(--input-bg); color: var(--ink);
+    color-scheme: light dark;
+  }
   /* Trip builder — explicit State → Section → Add controls so each
      trip's sections can be assembled without leaving the planner. */
   #planned-body .trip-builder {
@@ -2334,6 +2363,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="firebase-auth.js"></script>
-<script src="app.js?v=81"></script>
+<script src="app.js?v=83"></script>
 </body>
 </html>

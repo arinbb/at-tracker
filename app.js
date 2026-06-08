@@ -702,6 +702,14 @@
     safeSet(tripsKey(activeProfile), JSON.stringify({ trips, activeTripId }));
     scheduleCloudSave();
   }
+  // -------- Trip lifecycle: plan → completed --------
+  // A trip with status==="completed" (and a completedAt date) is a record
+  // of a hike that actually happened. Anything else is a plan in progress.
+  // Existing trips without a status default to "planning", so no migration
+  // is needed.
+  function tripStatus(t) { return t && t.status === "completed" ? "completed" : "planning"; }
+  function planningTrips() { return trips.filter((t) => tripStatus(t) === "planning"); }
+  function completedTrips() { return trips.filter((t) => tripStatus(t) === "completed"); }
   function getActiveTrip() {
     return trips.find((t) => t.id === activeTripId) || null;
   }
@@ -3204,16 +3212,25 @@
     if (isNaN(d.getTime())) return "";
     return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
   }
-  function renderTripsManagerList() {
-    const host = $("trips-manager-body");
+  // Shared card renderer: same shape for the Plans manager and the
+  // completed-Trips view, with mode controlling which actions are shown.
+  // mode: "planning" (Plans manager) | "completed" (Trips view)
+  function renderTripCardsInto(hostId, mode) {
+    const host = $(hostId);
     if (!host) return;
-    if (!trips || trips.length === 0) {
-      host.innerHTML = `<div class="tm-empty">No saved trips yet. Use <strong>+ New</strong> in the planner to save your current planned set as a trip.</div>`;
+    const list = mode === "completed" ? completedTrips() : planningTrips();
+    if (list.length === 0) {
+      host.innerHTML = mode === "completed"
+        ? `<div class="tm-empty">No completed trips yet. When you finish a plan, click <strong>✅ Mark completed</strong> on its card and it'll land here.</div>`
+        : `<div class="tm-empty">No plans in progress. Use <strong>+ New</strong> in the planner to save your current planned set.</div>`;
       return;
     }
-    const sorted = [...trips].sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+    const sortKey = mode === "completed"
+      ? (t) => Date.parse(t.completedAt || "") || (Number(t.createdAt) || 0)
+      : (t) => Number(t.createdAt) || 0;
+    const sorted = [...list].sort((a, b) => sortKey(b) - sortKey(a));
     const cards = sorted.map((t) => {
-      const isActive = t.id === activeTripId;
+      const isActive = mode === "planning" && t.id === activeTripId;
       const st = tripStats(t);
       const dir = (t.dir === "sobo" || t.dir === "nobo") ? t.dir : "nobo";
       const range = (st.fromName && st.toName)
@@ -3223,10 +3240,23 @@
         ? `<span class="tm-states">${st.states.map(escapeHtml).join(" · ")}</span>`
         : "";
       const created = fmtTripCreated(t);
+      // Completed mode shows a date input for the completion date (editable);
+      // planning mode shows the saved-on date as text.
+      const dateBit = mode === "completed"
+        ? `<label class="tm-stat tm-completed">Completed <input type="date" data-tm-completed-at value="${escapeHtml(t.completedAt || "")}" max="${todayISO()}" /></label>`
+        : (created ? `<span class="tm-stat tm-created">saved ${escapeHtml(created)}</span>` : "");
+      const actions = mode === "completed"
+        ? `<button data-tm-reopen title="Move this back to the Hike Planner as an in-progress plan">↩ Reopen as plan</button>` +
+          `<button data-tm-delete title="Delete this trip record. Does not unmark sections as hiked." class="tm-danger">✕ Delete record</button>`
+        : `<button data-tm-open${isActive ? " disabled" : ""}>${isActive ? "Currently open" : "Open in planner"}</button>` +
+          `<button data-tm-mark-completed title="Move this plan to Trips and mark its sections as hiked" class="tm-primary">✅ Mark completed</button>` +
+          `<button data-tm-duplicate title="Make a copy of this plan">⎘ Duplicate</button>` +
+          `<button data-tm-delete title="Delete this plan" class="tm-danger">✕ Delete</button>`;
       return `<article class="tm-card${isActive ? " tm-card-active" : ""}" data-trip-id="${escapeHtml(t.id)}">` +
         `<header class="tm-header">` +
           `<input class="tm-name" data-tm-name value="${escapeHtml(t.name)}" maxlength="80" aria-label="Trip name" />` +
           (isActive ? `<span class="tm-active-badge" title="Currently active in the planner">● active</span>` : "") +
+          (mode === "completed" ? `<span class="tm-active-badge" style="background:rgba(42,125,58,0.12);color:var(--hike);">✓ done</span>` : "") +
         `</header>` +
         `<div class="tm-meta">` +
           `<span class="tm-stat"><strong>${st.count}</strong> section${st.count === 1 ? "" : "s"}</span>` +
@@ -3235,27 +3265,82 @@
             `<option value="nobo"${dir === "nobo" ? " selected" : ""}>NOBO ↑</option>` +
             `<option value="sobo"${dir === "sobo" ? " selected" : ""}>SOBO ↓</option>` +
           `</select></label>` +
-          (created ? `<span class="tm-stat tm-created">saved ${escapeHtml(created)}</span>` : "") +
+          dateBit +
         `</div>` +
         `<div class="tm-range">${range}${stateBits ? " · " + stateBits : ""}</div>` +
-        `<footer class="tm-actions">` +
-          `<button data-tm-open${isActive ? " disabled" : ""}>${isActive ? "Currently open" : "Open in planner"}</button>` +
-          `<button data-tm-duplicate title="Make a copy of this trip">⎘ Duplicate</button>` +
-          `<button data-tm-delete title="Delete this trip" class="tm-danger">✕ Delete</button>` +
-        `</footer>` +
+        `<footer class="tm-actions">${actions}</footer>` +
         `</article>`;
     }).join("");
     host.innerHTML = cards;
   }
+  function renderTripsManagerList() { renderTripCardsInto("trips-manager-body", "planning"); }
+  function renderTripsList() { renderTripCardsInto("trips-modal-body", "completed"); }
   function openTripsManager() {
-    const n = (trips && trips.length) || 0;
+    const n = planningTrips().length;
     const countEl = $("trips-manager-count");
-    if (countEl) countEl.textContent = n ? `(${n} trip${n === 1 ? "" : "s"})` : "";
+    if (countEl) countEl.textContent = n ? `(${n} plan${n === 1 ? "" : "s"})` : "";
     renderTripsManagerList();
     $("trips-manager-modal")?.classList.add("show");
   }
   function closeTripsManager() {
     $("trips-manager-modal")?.classList.remove("show");
+  }
+  function openTripsCompleted() {
+    const n = completedTrips().length;
+    const countEl = $("trips-modal-count");
+    if (countEl) countEl.textContent = n ? `(${n} trip${n === 1 ? "" : "s"})` : "";
+    renderTripsList();
+    $("trips-modal")?.classList.add("show");
+  }
+  function closeTripsCompleted() { $("trips-modal")?.classList.remove("show"); }
+  // Promote a plan into the completed-Trips list. Asks for a date and
+  // (by default) marks each of its sections as hiked on that date so
+  // the Tracker/Stats reflect the actual progress.
+  function markTripCompleted(t) {
+    if (!t) return;
+    const today = todayISO();
+    const dateStr = (prompt(`What date did you finish "${t.name}"? (YYYY-MM-DD)`, today) || "").trim();
+    if (!dateStr) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { alert("Please enter the date as YYYY-MM-DD."); return; }
+    if (Date.parse(dateStr) > Date.parse(today)) {
+      if (!confirm("That date is in the future. Mark this trip completed anyway?")) return;
+    }
+    const ids = (Array.isArray(t.segs) ? t.segs : []).map(Number).filter(Number.isFinite);
+    let stamped = 0;
+    for (const id of ids) {
+      if (!progress.has(id)) { progress.set(id, dateStr); stamped++; }
+    }
+    t.status = "completed";
+    t.completedAt = dateStr;
+    // If the now-completed trip was active, advance to the next planning
+    // trip so the planner doesn't keep editing a finished thing.
+    if (activeTripId === t.id) {
+      const next = planningTrips().find((x) => x.id !== t.id);
+      activeTripId = next ? next.id : null;
+      if (activeTripId) syncPlannedFromActiveTrip();
+      else planned = new Set();
+    }
+    saveTrips();
+    saveProgress();
+    if (stamped > 0) { renderSections(); refreshMapStyles(); }
+    updateStats();
+    renderTripsManagerList();
+    renderTripsList();
+    renderPlannedSummary();
+  }
+  function reopenTripAsPlan(t) {
+    if (!t) return;
+    if (!confirm(`Move "${t.name}" back to the Hike Planner as an in-progress plan? (Sections you marked hiked stay marked.)`)) return;
+    t.status = "planning";
+    delete t.completedAt;
+    if (!activeTripId) {
+      activeTripId = t.id;
+      syncPlannedFromActiveTrip();
+    }
+    saveTrips();
+    renderTripsList();
+    renderTripsManagerList();
+    renderPlannedSummary();
   }
   function tripsManagerCardId(el) {
     const card = el.closest("[data-trip-id]");
@@ -3288,12 +3373,25 @@
       renderPlannedSummary();
       return;
     }
+    if (e.target.closest("[data-tm-mark-completed]")) {
+      markTripCompleted(t);
+      return;
+    }
+    if (e.target.closest("[data-tm-reopen]")) {
+      reopenTripAsPlan(t);
+      return;
+    }
     if (e.target.closest("[data-tm-delete]")) {
-      if (!confirm(`Delete trip "${t.name}"? This only removes the saved trip; it does not unmark any sections as planned or hiked.`)) return;
+      const isDone = tripStatus(t) === "completed";
+      const msg = isDone
+        ? `Delete the trip record "${t.name}"? Sections you marked hiked stay marked — only the saved trip entry is removed.`
+        : `Delete plan "${t.name}"? This only removes the saved plan; it does not unmark any sections.`;
+      if (!confirm(msg)) return;
       const wasActive = activeTripId === id;
       trips = trips.filter((x) => x.id !== id);
       if (wasActive) {
-        activeTripId = trips.length > 0 ? trips[0].id : null;
+        const next = planningTrips()[0];
+        activeTripId = next ? next.id : null;
         if (activeTripId) syncPlannedFromActiveTrip();
         else planned = new Set();
         saveProgress();
@@ -3303,6 +3401,7 @@
       }
       saveTrips();
       renderTripsManagerList();
+      renderTripsList();
       renderPlannedSummary();
       return;
     }
@@ -3320,7 +3419,10 @@
         renderPlannedSummary();
         // Re-render only the active badge / created label; keep input
         // focus by refreshing the list AFTER blur.
-        if (e.type === "blur") renderTripsManagerList();
+        if (e.type === "blur") {
+          renderTripsManagerList();
+          renderTripsList();
+        }
       }
       return;
     }
@@ -3328,9 +3430,19 @@
       t.dir = e.target.value === "sobo" ? "sobo" : "nobo";
       saveTrips();
       // If this is the active trip the planner itinerary depends on
-      // direction — re-render. Otherwise just the manager card.
+      // direction — re-render. Otherwise just the card list it came from.
       if (activeTripId === id) renderPlannedSummary();
       renderTripsManagerList();
+      renderTripsList();
+      return;
+    }
+    if (e.target.matches("[data-tm-completed-at]")) {
+      const v = e.target.value;
+      if (v && /^\d{4}-\d{2}-\d{2}$/.test(v)) {
+        t.completedAt = v;
+        saveTrips();
+        if (e.type === "blur") renderTripsList();
+      }
       return;
     }
   }
@@ -3387,10 +3499,11 @@
       // obvious at a glance (active = filled accent), not buried in a
       // dropdown. Click a chip to switch.
       html.push(`<div class="trip-chips" role="tablist" aria-label="Planned trips">`);
-      if (trips.length === 0) {
-        html.push(`<span class="trip-chips-empty">No saved trips yet — your current planned sections are unsaved.</span>`);
+      const planChips = planningTrips();
+      if (planChips.length === 0) {
+        html.push(`<span class="trip-chips-empty">No plans in progress — your current planned sections are unsaved.</span>`);
       } else {
-        for (const tt of trips) {
+        for (const tt of planChips) {
           const on = tt.id === activeTripId;
           html.push(`<button class="trip-chip${on ? " active" : ""}" data-trip-id="${escapeHtml(tt.id)}" role="tab" aria-selected="${on}" title="${on ? "Currently viewing this trip" : "Switch to this trip"}">` +
             `${on ? `<span class="trip-chip-dot" aria-hidden="true">●</span>` : ""}` +
@@ -3405,8 +3518,15 @@
         html.push(`<button id="trip-rename" title="Rename current trip">✎ Rename</button>`);
         html.push(`<button id="trip-delete" title="Delete current trip">✕ Delete</button>`);
       }
-      if (trips.length > 0) {
-        html.push(`<button id="trips-manage" title="See every saved trip and edit its values">📋 Manage all (${trips.length})</button>`);
+      {
+        const nPlanning = planningTrips().length;
+        if (nPlanning > 0) {
+          html.push(`<button id="trips-manage" title="See every plan in progress and edit its values">📋 Manage plans (${nPlanning})</button>`);
+        }
+        const nDone = completedTrips().length;
+        if (nDone > 0) {
+          html.push(`<button id="trips-tab-shortcut" title="See your completed trips" type="button">🏕 View trips (${nDone})</button>`);
+        }
       }
       html.push(`</div>`);
       const dir = tripDirection();
@@ -3588,7 +3708,16 @@
     if (_sub) {
       const bits = [escapeHtml(activeProfile)];
       if (plannedSegs.length) bits.push(`${plannedSegs.length} section${plannedSegs.length === 1 ? "" : "s"} · ${totalMi.toFixed(1)} mi`);
-      if (trips.length > 1) bits.push(`${trips.length} trips saved`);
+      {
+        const nP = planningTrips().length;
+        const nD = completedTrips().length;
+        if (nP > 1 || nD > 0) {
+          const parts = [];
+          if (nP > 0) parts.push(`${nP} plan${nP === 1 ? "" : "s"}`);
+          if (nD > 0) parts.push(`${nD} done`);
+          bits.push(parts.join(" · "));
+        }
+      }
       _sub.innerHTML = `<span id="planned-profile-name"></span>${bits.slice(1).map((b) => ` · ${b}`).join("")}`;
       const pn = $("planned-profile-name");
       if (pn) pn.textContent = activeProfile;
@@ -3676,6 +3805,11 @@
       renderPlannedSummary();
     });
     $("trips-manage")?.addEventListener("click", openTripsManager);
+    $("trips-tab-shortcut")?.addEventListener("click", () => {
+      // Jump to the dedicated Trips tab so the user lands in the right
+      // navigational context, not in a sub-modal of the planner.
+      document.querySelector('.primary-tabs [data-tab="trips"]')?.click();
+    });
     $("trip-rename")?.addEventListener("click", () => {
       const t = getActiveTrip();
       if (!t) return;
@@ -6459,7 +6593,7 @@
         const tab = b.dataset.tab;
         if (tab === "tracker") {
           // Close any open major modal and return to the default view.
-          ["planned-modal", "pack-modal", "stats-modal", "settings-modal"]
+          ["planned-modal", "pack-modal", "stats-modal", "settings-modal", "trips-modal"]
             .forEach((id) => $(id)?.classList.remove("show"));
           activateTab("tracker");
           return;
@@ -6468,13 +6602,14 @@
         if (tab === "planner") renderPlannedSummary();
         else if (tab === "pack") renderPack();
         else if (tab === "stats") renderStats();
+        else if (tab === "trips") openTripsCompleted();
         else if (tab === "settings") $("settings-modal")?.classList.add("show");
       });
     });
     // When the user closes any major modal via its own Close button or by
     // clicking the backdrop, revert the active tab to Tracker so the bar
     // doesn't lie about what's visible.
-    ["planned-modal", "pack-modal", "stats-modal", "settings-modal"].forEach((id) => {
+    ["planned-modal", "pack-modal", "stats-modal", "settings-modal", "trips-modal"].forEach((id) => {
       const m = $(id);
       if (!m) return;
       const observer = new MutationObserver(() => {
@@ -6516,6 +6651,11 @@
     $("trips-manager-body")?.addEventListener("click", handleTripsManagerAction);
     $("trips-manager-body")?.addEventListener("change", handleTripsManagerChange);
     $("trips-manager-body")?.addEventListener("blur", handleTripsManagerChange, true);
+    // Completed-trips view: same handlers, different host element.
+    $("trips-modal-close")?.addEventListener("click", closeTripsCompleted);
+    $("trips-modal-body")?.addEventListener("click", handleTripsManagerAction);
+    $("trips-modal-body")?.addEventListener("change", handleTripsManagerChange);
+    $("trips-modal-body")?.addEventListener("blur", handleTripsManagerChange, true);
     $("pack-transfer-apply")?.addEventListener("click", applyPackTransfer);
     $("pack-transfer-from")?.addEventListener("change", () => renderPackTransferItems());
     $("pack-transfer-select-all")?.addEventListener("change", (e) => {
