@@ -4950,13 +4950,24 @@
   }
   function clearAllPlanned() {
     if (planned.size === 0) return;
-    if (!confirm(`Clear all ${planned.size} planned segments?`)) return;
+    const t = getActiveTrip();
+    const tripName = (t && t.name) || "this plan";
+    if (!confirm(
+      `Remove all ${planned.size} section${planned.size === 1 ? "" : "s"} from "${tripName}"?\n\n` +
+      `This only empties the sections list of the plan you're viewing. ` +
+      `Your other saved plans, completed Trips, hiked sections, and section dates are not touched.`
+    )) return;
     planned = new Set();
+    // Push the cleared state into the active trip so the change actually
+    // sticks across reloads (otherwise syncPlannedFromActiveTrip would
+    // reload the old segs from the trip object and undo the clear).
+    syncActiveTripFromPlanned();
     saveProgress();
+    saveTrips();
     renderSections();
     updateStats();
     refreshMapStyles();
-    $("planned-modal").classList.remove("show");
+    renderPlannedSummary();
   }
   function markPlannedAsHiked() {
     const todo = [...planned].filter((id) => !progress.has(id));
