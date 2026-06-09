@@ -1376,15 +1376,35 @@
     if (!mapTripPickActive) return;
     const raw = snapClickToTrail(e.latlng);
     if (!raw) return;
-    if (raw.distMi > 0.6) {
-      updateMapTripBanner(`That tap was ~${raw.distMi.toFixed(2)} mi off the trail — try clicking closer to the AT line.`);
+    // Hard reject only when the click is far enough that no reasonable
+    // user could have meant any AT point. 5 mi catches the Approach
+    // Trail / Amicalola Falls case (~8 mi from Springer) for clicks at
+    // the trail-end-ish midpoint while still rejecting wildly wrong taps.
+    if (raw.distMi > 5) {
+      updateMapTripBanner(
+        `That tap was ~${raw.distMi.toFixed(1)} mi off the AT. ` +
+        `The trail in this app runs from Springer Mountain (GA) to Katahdin (ME); ` +
+        `feeder routes like the Approach Trail aren't part of the data — tap on the AT line itself.`
+      );
       return;
     }
     const snap = promoteSnapToBoundary(raw);
+    const segName = (() => {
+      const s = segIndex.get(snap.segId);
+      return s ? `${s.from} → ${s.to}` : "the AT";
+    })();
+    // 0.5 mi is the "definitely intended" zone — no warning. Beyond that
+    // the click is accepted but the banner explains where the marker
+    // actually landed so the user can redo if it's not what they meant.
+    const farish = raw.distMi > 0.5;
     if (mapTripSnapA === null) {
       mapTripSnapA = snap;
       mapTripMarkerA = _mapTripMarker([snap.lat, snap.lon], "A").addTo(map);
-      updateMapTripBanner("Got the start. Now tap where you ended.");
+      updateMapTripBanner(
+        farish
+          ? `Snapped A to ${segName} (~${raw.distMi.toFixed(1)} mi from your tap). Now tap where you ended — or Cancel to restart.`
+          : "Got the start. Now tap where you ended."
+      );
       return;
     }
     // Second click: build the route + open the confirmation modal.
